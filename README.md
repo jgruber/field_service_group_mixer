@@ -21,6 +21,20 @@ The `congregation.db` SQLite database used by this application can be exported f
 - **Family member tooltip** — hover any family card to see each member with their role and status indicators
 - **Moved members excluded** — only persons and families with `moved = false` are included
 
+## Authentication
+
+The Flask server requires HTTP Basic Authentication on all routes.
+
+| Default username | Default password |
+|---|---|
+| `admin` | `readme` |
+
+**Change the default password immediately after first login** using the **Users** button in the app header.
+
+User credentials are stored as bcrypt-hashed passwords in `data/users.json` (excluded from version control). The file is created automatically with the default `admin` account on first startup if it does not already exist.
+
+> **Note:** HTTP Basic Authentication transmits credentials with every request. Run behind a TLS-terminating reverse proxy (nginx, Caddy, etc.) in any non-local deployment.
+
 ## Getting Started
 
 ### Option 1 — Flask dev server (recommended)
