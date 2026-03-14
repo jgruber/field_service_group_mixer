@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Field Service Group Mixer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/sql-wasm.js"></script>
+  <style>
+    .family-card.dragging   { opacity: 0.35; transform: rotate(1.5deg) scale(0.97); }
+    .drop-zone.drag-over    { outline: 2px dashed #818cf8; background-color: #eef2ff !important; }
+    [draggable="true"]      { cursor: grab; }
+    [draggable="true"]:active { cursor: grabbing; }
+  </style>
+</head>
+<body class="bg-slate-100 min-h-screen font-sans">
+
+<!-- ─── Header ──────────────────────────────────────────────────────────── -->
+<header class="bg-indigo-700 text-white px-6 py-3 shadow-md sticky top-0 z-20">
+  <div class="max-w-screen-2xl mx-auto flex items-center justify-between gap-4">
+    <div>
+      <h1 class="text-lg font-bold tracking-tight leading-none">Field Service Group Mixer</h1>
+      <p id="congregation-name" class="text-indigo-200 text-xs mt-0.5 hidden"></p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="loading-text" class="hidden text-indigo-200 text-sm animate-pulse">Loading…</span>
+      <button id="back-btn"
+              class="hidden flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
+              onclick="showGroupsView()">
+        ← Groups
+      </button>
+      <button id="upload-btn"
+              class="flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
+              onclick="showUploadScreen()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4"/>
+        </svg>
+        Upload Database
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- ─── Main ─────────────────────────────────────────────────────────────── -->
+<main class="max-w-screen-2xl mx-auto p-6">
+
+  <!-- Upload screen -->
+  <div id="upload-placeholder" class="flex flex-col items-center justify-center min-h-[65vh] gap-4">
+
+    <!-- Server DB notice (shown when congregation.db exists on server) -->
+    <div id="server-db-section" class="hidden w-full max-w-md">
+      <div class="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex items-center justify-between gap-4">
+        <div class="min-w-0">
+          <div class="font-semibold text-indigo-900 text-sm">📁 congregation.db</div>
+          <div id="server-db-status" class="text-indigo-500 text-xs mt-0.5">Found on server · loads automatically on startup</div>
+        </div>
+        <button onclick="deleteServerDB()"
+                class="shrink-0 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+          Delete
+        </button>
+      </div>
+    </div>
+
+    <!-- File drop zone -->
+    <div id="file-drop-zone"
+         class="bg-white rounded-2xl border-2 border-dashed border-slate-300 p-14 text-center max-w-md w-full shadow-sm transition-colors">
+      <div class="text-5xl mb-4">🗄️</div>
+      <h2 class="text-lg font-semibold text-slate-700 mb-1">Upload Congregation Database</h2>
+      <p class="text-slate-400 text-sm mb-6">Drop a <code class="bg-slate-100 px-1 rounded">.db</code> file here or click to browse</p>
+      <label class="cursor-pointer inline-block bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-6 py-2.5 rounded-lg transition select-none">
+        Choose File
+        <input type="file" id="file-input" accept=".db,.sqlite,.sqlite3" class="hidden" />
+      </label>
+    </div>
+
+  </div>
+
+  <!-- Groups view (hidden until DB loaded) -->
+  <div id="groups-view" class="hidden space-y-5">
+
+    <!-- Congregation-wide summary bar -->
+    <div id="summary-bar" class="bg-white rounded-xl shadow-sm p-3 grid gap-2"
+         style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr))"></div>
+
+    <!-- Drag hint -->
+    <p class="text-xs text-slate-400 text-center">
+      Drag family cards between groups — stats update automatically.
+    </p>
+
+    <!-- Groups grid -->
+    <div id="groups-container"
+         class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+    </div>
+
+  </div>
+</main>
+
+<script>
+// ─── State ─────────────────────────────────────────────────────────────────
+const state = {
+  db:                null,
+  congregationName:  '',
+  groups:            [],
+  families:          {},
+  groupFamilies:     {},
+};
+
+let serverDbExists = false;
+
+// ─── SQL.js bootstrap ──────────────────────────────────────────────────────
+let SQL = null;
+async function ensureSQL() {
+  if (!SQL) {
+    SQL = await initSqlJs({
+      locateFile: f => `https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/${f}`
+    });
+  }
+}
+
+// ─── Server DB check / auto-load ──────────────────────────────────────────
+async function checkServerDB() {
+  try {
+    const res = await fetch('/data/congregation.db');
+    if (!res.ok) return;
+    serverDbExists = true;
+    document.getElementById('server-db-section').classList.remove('hidden');
+    setLoading(true);
+    const buf = await res.arrayBuffer();
+    await loadBuffer(buf);
+  } catch {
+    // Running without Flask (static file server) — no auto-load
+  }
+}
+
+async function deleteServerDB() {
+  if (!confirm('Delete congregation.db from the server?\nThe app will need a new file on next startup.')) return;
+  try {
+    const res = await fetch('/data/congregation.db', { method: 'DELETE' });
+    if (res.ok || res.status === 204) {
+      serverDbExists = false;
+      document.getElementById('server-db-section').classList.add('hidden');
+    }
+  } catch {
+    alert('Failed to delete — server may not be running.');
+  }
+}
+
+// ─── Save uploaded file to server ─────────────────────────────────────────
+async function saveToServer(buf) {
+  try {
+    const res = await fetch('/data/congregation.db', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: buf,
+    });
+    if (res.ok || res.status === 204) {
+      serverDbExists = true;
+      document.getElementById('server-db-section').classList.remove('hidden');
+      document.getElementById('server-db-status').textContent =
+        'Saved to server · loads automatically on startup';
+    }
+  } catch {
+    // Static server — no save
+  }
+}
+
+// ─── Load helpers ──────────────────────────────────────────────────────────
+async function loadFile(file) {
+  setLoading(true);
+  try {
+    await ensureSQL();
+    const buf = await file.arrayBuffer();
+    await saveToServer(buf.slice(0));
+    await loadBuffer(buf);
+  } catch (err) {
+    console.error(err);
+    alert('Failed to load database:\n' + err.message);
+    setLoading(false);
+  }
+}
+
+async function loadBuffer(buf) {
+  await ensureSQL();
+  if (state.db) state.db.close();
+  state.db = new SQL.Database(new Uint8Array(buf));
+  buildState();
+  renderAll();
+  setLoading(false);
+}
+
+// ─── Build in-memory state from DB ────────────────────────────────────────
+function buildState() {
+  const db = state.db;
+
+  // Congregation name
+  const cRes = db.exec('SELECT name FROM congregations LIMIT 1');
+  state.congregationName = cRes.length ? (cRes[0].values[0][0] || 'Congregation') : 'Congregation';
+
+  // Field service groups
+  state.groups        = [];
+  state.groupFamilies = {};
+  const gRes = db.exec(
+    'SELECT id, name, overseer, overseer_id, assistant, assistant_id, phone FROM field_service_groups ORDER BY name'
+  );
+  if (gRes.length) {
+    for (const [id, name, overseer, overseer_id, assistant, assistant_id, phone] of gRes[0].values) {
+      state.groups.push({ id, name: name || '', overseer: overseer || '', overseer_id: overseer_id || null, assistant: assistant || null, assistant_id: assistant_id || null, phone: phone || '' });
+      state.groupFamilies[id] = [];
+    }
+  }
+
+  // Persons indexed by family_id — only where moved = 0 (not removed)
+  const byFamily = {};
+  const pRes = db.exec(`
+    SELECT id, family_id, category,
+           display_name,
+           elder, ministerial_servant, special_pioneer,
+           pioneer, inactive
+    FROM persons
+    WHERE moved = 0
+      AND (removed IS NULL OR removed = 0)
+  `);
+  if (pRes.length) {
+    for (const [id, family_id, category, displayName,
+                elder, ms, sp, pioneer, inactive] of pRes[0].values) {
+      if (!family_id) continue;
+      if (!byFamily[family_id]) byFamily[family_id] = [];
+      byFamily[family_id].push({
+        id,
+        displayName: displayName || '',
+        category: category || 'publisher',
+        elder:    !!elder,
+        ms:       !!ms,
+        sp:       !!sp,
+        pioneer:  !!pioneer,
+        inactive: !!inactive,
+      });
+    }
+  }
+
+  // Families — only where moved = 0
+  state.families = {};
+  const fRes = db.exec(`
+    SELECT id, name, field_service_group_id, family_head, city
+    FROM families
+    WHERE moved = 0
+    ORDER BY name
+  `);
+  if (fRes.length) {
+    for (const [id, name, groupId, head, city] of fRes[0].values) {
+      const persons = byFamily[id] || [];
+      if (persons.length === 0) continue; // skip families with no non-moved members
+      state.families[id] = {
+        id,
+        name:    name    || '(Unknown)',
+        groupId: groupId || null,
+        head:    head    || '',
+        city:    city    || '',
+        persons,
+      };
+      if (groupId && state.groupFamilies[groupId]) {
+        state.groupFamilies[groupId].push(id);
+      }
+    }
+  }
+}
+
+// ─── Stats helpers ─────────────────────────────────────────────────────────
+function familyStats(familyId) {
+  const persons = state.families[familyId]?.persons ?? [];
+  const s = { total: persons.length, elders: 0, ms: 0, sp: 0, pioneers: 0, active: 0, inactive: 0, associated: 0 };
+  for (const p of persons) {
+    if (p.elder)                     s.elders++;
+    if (p.ms)                        s.ms++;
+    if (p.sp)                        s.sp++;
+    if (p.pioneer)                   s.pioneers++;
+    if (!p.inactive)                 s.active++;
+    else                             s.inactive++;
+    if (p.category === 'associated') s.associated++;
+  }
+  return s;
+}
+
+function groupStats(groupId) {
+  const s = { families: 0, persons: 0, elders: 0, ms: 0, sp: 0, pioneers: 0, active: 0, inactive: 0, associated: 0 };
+  for (const fid of state.groupFamilies[groupId] ?? []) {
+    const fs = familyStats(fid);
+    s.families++;
+    s.persons    += fs.total;
+    s.elders     += fs.elders;
+    s.ms         += fs.ms;
+    s.sp         += fs.sp;
+    s.pioneers   += fs.pioneers;
+    s.active     += fs.active;
+    s.inactive   += fs.inactive;
+    s.associated += fs.associated;
+  }
+  return s;
+}
+
+function totalStats() {
+  const s = { groups: state.groups.length, families: 0, persons: 0, elders: 0, ms: 0, sp: 0, pioneers: 0, active: 0, inactive: 0, associated: 0 };
+  for (const g of state.groups) {
+    const gs = groupStats(g.id);
+    s.families   += gs.families;
+    s.persons    += gs.persons;
+    s.elders     += gs.elders;
+    s.ms         += gs.ms;
+    s.sp         += gs.sp;
+    s.pioneers   += gs.pioneers;
+    s.active     += gs.active;
+    s.inactive   += gs.inactive;
+    s.associated += gs.associated;
+  }
+  return s;
+}
+
+// ─── Assistant editing ─────────────────────────────────────────────────────
+const editingAssistant = new Set(); // groupIds with assistant dropdown open
+
+function getEligibleAssistants(groupId) {
+  const eligible = [];
+  for (const fid of state.groupFamilies[groupId] ?? []) {
+    for (const p of state.families[fid]?.persons ?? []) {
+      if (p.elder || p.ms) {
+        eligible.push({ id: p.id, name: p.displayName || '(Unknown)', role: p.elder ? 'Elder' : 'MS' });
+      }
+    }
+  }
+  return eligible.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function toggleAssistantEdit(groupId) {
+  if (editingAssistant.has(groupId)) editingAssistant.delete(groupId);
+  else editingAssistant.add(groupId);
+  rerenderGroup(groupId);
+}
+
+function setGroupAssistant(groupId, personIdStr) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group) return;
+  editingAssistant.delete(groupId);
+  const personId = personIdStr ? parseInt(personIdStr) : null;
+  if (!personId) {
+    group.assistant    = null;
+    group.assistant_id = null;
+  } else {
+    outer: for (const fid of state.groupFamilies[groupId] ?? []) {
+      for (const p of state.families[fid]?.persons ?? []) {
+        if (p.id === personId) {
+          group.assistant    = p.displayName;
+          group.assistant_id = p.id;
+          break outer;
+        }
+      }
+    }
+  }
+  rerenderGroup(groupId);
+}
+
+// ─── Drag & Drop ───────────────────────────────────────────────────────────
+const drag = { familyId: null, sourceGroupId: null };
+
+function onDragStart(e, familyId, groupId) {
+  drag.familyId      = familyId;
+  drag.sourceGroupId = groupId;
+  e.dataTransfer.effectAllowed = 'move';
+  hideTooltip();
+  requestAnimationFrame(() => e.currentTarget.classList.add('dragging'));
+}
+
+function onDragEnd(e) {
+  e.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.drop-zone.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+function onDragOver(e, groupId) {
+  if (drag.sourceGroupId === groupId) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+
+function onDragEnter(e, groupId) {
+  if (drag.sourceGroupId === groupId) return;
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over');
+}
+
+function onDragLeave(e) {
+  if (!e.currentTarget.contains(e.relatedTarget)) {
+    e.currentTarget.classList.remove('drag-over');
+  }
+}
+
+function onDrop(e, targetGroupId) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const { familyId, sourceGroupId } = drag;
+  if (!familyId || sourceGroupId === targetGroupId) return;
+  moveFamily(familyId, sourceGroupId, targetGroupId);
+}
+
+function moveFamily(familyId, fromGroupId, toGroupId) {
+  // If a member of the moved family is the source group's assistant, clear it
+  const fromGroup = state.groups.find(g => g.id === fromGroupId);
+  if (fromGroup?.assistant_id) {
+    const movedIds = new Set(state.families[familyId]?.persons.map(p => p.id) ?? []);
+    if (movedIds.has(fromGroup.assistant_id)) {
+      fromGroup.assistant    = null;
+      fromGroup.assistant_id = null;
+      editingAssistant.add(fromGroupId); // auto-open dropdown for reassignment
+    }
+  }
+
+  state.groupFamilies[fromGroupId] = state.groupFamilies[fromGroupId].filter(id => id !== familyId);
+  state.groupFamilies[toGroupId].push(familyId);
+  state.families[familyId].groupId = toGroupId;
+  rerenderGroup(fromGroupId);
+  rerenderGroup(toGroupId);
+  renderSummaryBar();
+}
+
+// ─── View helpers ──────────────────────────────────────────────────────────
+function showGroupsView() {
+  document.getElementById('upload-placeholder').classList.add('hidden');
+  document.getElementById('groups-view').classList.remove('hidden');
+  document.getElementById('back-btn').classList.add('hidden');
+}
+
+function showUploadScreen() {
+  document.getElementById('groups-view').classList.add('hidden');
+  document.getElementById('upload-placeholder').classList.remove('hidden');
+  if (state.db) document.getElementById('back-btn').classList.remove('hidden');
+  // Reflect current server DB state
+  document.getElementById('server-db-section').classList.toggle('hidden', !serverDbExists);
+}
+
+// ─── Tooltip ───────────────────────────────────────────────────────────────
+function showFamilyTooltip(e, familyId) {
+  const family = state.families[familyId];
+  if (!family || !family.persons.length) return;
+
+  const tip = document.getElementById('family-tooltip');
+  const sorted = [...family.persons].sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  const rows = sorted.map((p, i) => {
+    const badges = [];
+    if (p.elder)                     badges.push(`<span class="bg-blue-100   text-blue-700   text-[9px] font-semibold px-1 py-0.5 rounded">Elder</span>`);
+    if (p.ms)                        badges.push(`<span class="bg-emerald-100 text-emerald-700 text-[9px] font-semibold px-1 py-0.5 rounded">Min. Svt</span>`);
+    if (p.sp)                        badges.push(`<span class="bg-purple-100  text-purple-700  text-[9px] font-semibold px-1 py-0.5 rounded">Sp. Pioneer</span>`);
+    if (p.pioneer)                   badges.push(`<span class="bg-teal-100    text-teal-700    text-[9px] font-semibold px-1 py-0.5 rounded">Pioneer</span>`);
+    if (p.inactive)                  badges.push(`<span class="bg-red-100     text-red-600     text-[9px] font-semibold px-1 py-0.5 rounded">Inactive</span>`);
+    else                             badges.push(`<span class="bg-green-100   text-green-700   text-[9px] font-semibold px-1 py-0.5 rounded">Active</span>`);
+    if (p.category === 'associated') badges.push(`<span class="bg-orange-100  text-orange-600  text-[9px] font-semibold px-1 py-0.5 rounded">Associated</span>`);
+
+    return `<div class="flex items-start justify-between gap-3 py-1${i < sorted.length - 1 ? ' border-b border-slate-100' : ''}">
+      <span class="text-slate-700 text-xs font-medium leading-snug shrink-0">${h(p.displayName)}</span>
+      <div class="flex flex-wrap gap-1 justify-end">${badges.join('')}</div>
+    </div>`;
+  }).join('');
+
+  tip.innerHTML = `
+    <div class="font-semibold text-slate-900 text-sm pb-1.5 mb-1 border-b border-slate-200">${h(family.name)}</div>
+    ${rows}`;
+
+  // Make visible to measure, then position
+  tip.classList.remove('hidden');
+  const tw = tip.offsetWidth, th = tip.offsetHeight, margin = 14;
+  let x = e.clientX + margin, y = e.clientY + margin;
+  if (x + tw > window.innerWidth  - 8) x = e.clientX - tw - margin;
+  if (y + th > window.innerHeight - 8) y = e.clientY - th - margin;
+  tip.style.left = Math.max(8, x) + 'px';
+  tip.style.top  = Math.max(8, y) + 'px';
+}
+
+function hideTooltip() {
+  document.getElementById('family-tooltip').classList.add('hidden');
+}
+
+// ─── Render helpers ────────────────────────────────────────────────────────
+function h(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function statPill(label, value, color) {
+  return `<div class="text-center py-2">
+    <div class="text-base font-bold ${color}">${value}</div>
+    <div class="text-[10px] leading-tight text-slate-400">${label}</div>
+  </div>`;
+}
+
+function familyCardHTML(family) {
+  const fs = familyStats(family.id);
+  const badges = [];
+  if (fs.elders)     badges.push(`<span class="bg-blue-100   text-blue-700   px-1.5 py-0.5 rounded text-[10px] font-semibold">E:${fs.elders}</span>`);
+  if (fs.ms)         badges.push(`<span class="bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded text-[10px] font-semibold">MS:${fs.ms}</span>`);
+  if (fs.sp)         badges.push(`<span class="bg-purple-100  text-purple-700  px-1.5 py-0.5 rounded text-[10px] font-semibold">SP:${fs.sp}</span>`);
+  if (fs.pioneers)   badges.push(`<span class="bg-teal-100    text-teal-700    px-1.5 py-0.5 rounded text-[10px] font-semibold">P:${fs.pioneers}</span>`);
+  if (fs.inactive)   badges.push(`<span class="bg-red-100     text-red-600     px-1.5 py-0.5 rounded text-[10px] font-semibold">I:${fs.inactive}</span>`);
+  if (fs.associated) badges.push(`<span class="bg-orange-100  text-orange-600  px-1.5 py-0.5 rounded text-[10px] font-semibold">A:${fs.associated}</span>`);
+
+  const activeTag = fs.active
+    ? `<span class="text-green-600 text-[10px] font-semibold">${fs.active} act.</span>`
+    : '';
+
+  return `
+    <div class="family-card bg-white border border-slate-200 rounded-lg px-3 py-2
+                hover:border-indigo-300 hover:shadow-sm transition-all select-none"
+         draggable="true"
+         data-family-id="${family.id}"
+         ondragstart="onDragStart(event, ${family.id}, ${family.groupId})"
+         ondragend="onDragEnd(event)"
+         onmouseenter="showFamilyTooltip(event, ${family.id})"
+         onmouseleave="hideTooltip()">
+      <div class="flex items-start justify-between gap-1">
+        <div class="min-w-0">
+          <div class="font-semibold text-sm text-slate-800 truncate">${h(family.name)}</div>
+          <div class="text-[11px] text-slate-400 leading-tight">
+            ${family.city ? h(family.city) + ' · ' : ''}${fs.total} person${fs.total !== 1 ? 's' : ''}
+          </div>
+        </div>
+        <div class="shrink-0">${activeTag}</div>
+      </div>
+      ${badges.length
+        ? `<div class="flex flex-wrap gap-1 mt-1.5">${badges.join('')}</div>`
+        : ''}
+    </div>`;
+}
+
+function groupCardHTML(group) {
+  const gs           = groupStats(group.id);
+  const fids         = state.groupFamilies[group.id] ?? [];
+  const sortedFams   = [...fids]
+    .map(id => state.families[id])
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const familyListHTML = sortedFams.length
+    ? sortedFams.map(f => familyCardHTML(f)).join('')
+    : '<p class="text-slate-400 text-xs text-center py-6 italic">No families</p>';
+
+  return `
+    <div id="group-card-${group.id}"
+         class="bg-white rounded-xl shadow-sm flex flex-col overflow-hidden min-h-0">
+
+      <div class="bg-indigo-600 text-white px-4 py-3 shrink-0">
+        <h2 class="font-bold text-base leading-tight">${h(group.name)}</h2>
+        <div class="text-indigo-200 text-[11px] space-y-1 mt-1">
+          ${group.overseer ? `<div>👤 ${h(group.overseer)}</div>` : ''}
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span>🤝</span>
+            ${editingAssistant.has(group.id)
+              ? `<select onchange="setGroupAssistant(${group.id}, this.value)"
+                         class="bg-indigo-700 border border-indigo-400 text-white text-[11px] rounded px-1.5 py-0.5">
+                   <option value="">— None —</option>
+                   ${getEligibleAssistants(group.id).map(p =>
+                     `<option value="${p.id}" ${group.assistant_id === p.id ? 'selected' : ''}>${h(p.name)} (${p.role})</option>`
+                   ).join('')}
+                 </select>
+                 <button onclick="toggleAssistantEdit(${group.id})"
+                         class="text-indigo-300 hover:text-white leading-none" title="Cancel">✕</button>`
+              : `<span class="${group.assistant ? '' : 'text-amber-300 italic'}">${h(group.assistant) || 'Not set'}</span>
+                 <button onclick="toggleAssistantEdit(${group.id})"
+                         class="text-indigo-300 hover:text-white opacity-70 hover:opacity-100 transition leading-none" title="Change assistant">
+                   <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H8v-2.414a2 2 0 01.586-1.414z"/>
+                   </svg>
+                 </button>`
+            }
+          </div>
+          ${group.phone ? `<div>📞 ${h(group.phone)}</div>` : ''}
+        </div>
+      </div>
+
+      <div class="grid grid-cols-5 border-b border-slate-100 bg-slate-50 shrink-0 divide-x divide-slate-100">
+        ${statPill('Families',  gs.families,  'text-slate-700')}
+        ${statPill('Elders',    gs.elders,    'text-blue-700')}
+        ${statPill('Min. Sv.',  gs.ms,        'text-emerald-700')}
+        ${statPill('Sp. Pio.',  gs.sp,        'text-purple-700')}
+        ${statPill('Reg. Pio.', gs.pioneers,  'text-teal-700')}
+      </div>
+      <div class="grid grid-cols-4 border-b border-slate-200 bg-slate-50 shrink-0 divide-x divide-slate-100">
+        ${statPill('Persons',   gs.persons,   'text-slate-700')}
+        ${statPill('Active',    gs.active,    'text-green-700')}
+        ${statPill('Inactive',  gs.inactive,  'text-red-600')}
+        ${statPill('Assoc.',    gs.associated,'text-orange-600')}
+      </div>
+
+      <div class="drop-zone flex-1 overflow-y-auto p-3 space-y-2 min-h-[96px] max-h-[480px] bg-slate-50/50"
+           data-group-id="${group.id}"
+           ondragover="onDragOver(event, ${group.id})"
+           ondragenter="onDragEnter(event, ${group.id})"
+           ondragleave="onDragLeave(event)"
+           ondrop="onDrop(event, ${group.id})">
+        ${familyListHTML}
+      </div>
+    </div>`;
+}
+
+// ─── Full render ───────────────────────────────────────────────────────────
+function renderAll() {
+  document.getElementById('upload-placeholder').classList.add('hidden');
+  document.getElementById('groups-view').classList.remove('hidden');
+  document.getElementById('back-btn').classList.add('hidden');
+
+  const nameEl = document.getElementById('congregation-name');
+  nameEl.textContent = state.congregationName;
+  nameEl.classList.remove('hidden');
+
+  renderSummaryBar();
+  document.getElementById('groups-container').innerHTML =
+    state.groups.map(g => groupCardHTML(g)).join('');
+}
+
+function renderSummaryBar() {
+  const t = totalStats();
+  const items = [
+    { label: 'Groups',     value: t.groups,     color: 'text-indigo-700'  },
+    { label: 'Families',   value: t.families,   color: 'text-slate-700'   },
+    { label: 'Persons',    value: t.persons,    color: 'text-slate-700'   },
+    { label: 'Elders',     value: t.elders,     color: 'text-blue-700'    },
+    { label: 'Min. Svts',  value: t.ms,         color: 'text-emerald-700' },
+    { label: 'Sp. Pios',   value: t.sp,         color: 'text-purple-700'  },
+    { label: 'Reg. Pios',  value: t.pioneers,   color: 'text-teal-700'    },
+    { label: 'Active',     value: t.active,     color: 'text-green-700'   },
+    { label: 'Inactive',   value: t.inactive,   color: 'text-red-600'     },
+    { label: 'Associated', value: t.associated, color: 'text-orange-600'  },
+  ];
+  document.getElementById('summary-bar').innerHTML = items.map(item => `
+    <div class="bg-slate-50 rounded-lg py-2 px-1 text-center">
+      <div class="text-lg font-bold ${item.color}">${item.value}</div>
+      <div class="text-[10px] text-slate-400 leading-tight">${item.label}</div>
+    </div>`).join('');
+}
+
+function rerenderGroup(groupId) {
+  const existing = document.getElementById(`group-card-${groupId}`);
+  if (!existing) return;
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group) return;
+  existing.outerHTML = groupCardHTML(group);
+}
+
+// ─── File input wiring ─────────────────────────────────────────────────────
+document.getElementById('file-input').addEventListener('change', async e => {
+  const file = e.target.files?.[0];
+  if (file) await loadFile(file);
+  e.target.value = '';
+});
+
+const dropZone = document.getElementById('file-drop-zone');
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('border-indigo-400', 'bg-indigo-50'); });
+dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('border-indigo-400', 'bg-indigo-50'));
+dropZone.addEventListener('drop', async e => {
+  e.preventDefault();
+  dropZone.classList.remove('border-indigo-400', 'bg-indigo-50');
+  const file = e.dataTransfer.files?.[0];
+  if (file) await loadFile(file);
+});
+
+function setLoading(on) {
+  document.getElementById('loading-text').classList.toggle('hidden', !on);
+}
+
+// ─── Init ──────────────────────────────────────────────────────────────────
+ensureSQL().catch(console.error);
+checkServerDB();
+</script>
+<!-- ─── Floating family tooltip ──────────────────────────────────────────── -->
+<div id="family-tooltip"
+     class="fixed hidden z-50 bg-white border border-slate-200 rounded-xl shadow-xl p-3 pointer-events-none"
+     style="max-width:300px; min-width:180px"></div>
+
+</body>
+</html>
