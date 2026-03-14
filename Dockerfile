@@ -7,6 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY index.html .
 COPY server.py .
+COPY favicon.svg .
+COPY manifest.json .
+COPY icons/ icons/
 
 RUN mkdir -p data
 

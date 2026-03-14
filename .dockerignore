@@ -5,3 +5,4 @@ data/
 .git/
 .gitignore
 README.md
+create_icons.py

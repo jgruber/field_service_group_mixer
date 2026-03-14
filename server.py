@@ -1,7 +1,7 @@
 import os
 import json
 from functools import wraps
-from flask import Flask, send_file, request, abort, Response, jsonify
+from flask import Flask, send_file, request, abort, Response, jsonify, send_from_directory
 
 app = Flask(__name__)
 
@@ -52,8 +52,20 @@ def index():
     return send_file('index.html')
 
 @app.route('/favicon.svg')
-def favicon():
+def favicon_svg():
     return send_file('favicon.svg', mimetype='image/svg+xml')
+
+@app.route('/favicon.ico')
+def favicon_ico():
+    return send_from_directory('icons', 'icon-192.png', mimetype='image/png')
+
+@app.route('/manifest.json')
+def manifest():
+    return send_file('manifest.json', mimetype='application/manifest+json')
+
+@app.route('/icons/<path:filename>')
+def icons(filename):
+    return send_from_directory('icons', filename)
 
 @app.route('/data/congregation.db', methods=['GET'])
 @_auth_required
