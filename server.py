@@ -14,7 +14,7 @@ USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 def load_users():
     if not os.path.exists(USERS_FILE):
         os.makedirs(DATA_DIR, exist_ok=True)
-        users = {'admin': 'readme'}
+        users = {'admin': 'changeme'}
         _save_users(users)
         return users
     with open(USERS_FILE) as f:

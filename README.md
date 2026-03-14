@@ -27,7 +27,7 @@ The Flask server requires HTTP Basic Authentication on all routes.
 
 | Default username | Default password |
 |---|---|
-| `admin` | `readme` |
+| `admin` | `changeme` |
 
 **Change the default password immediately after first login** using the **Users** button in the app header.
 

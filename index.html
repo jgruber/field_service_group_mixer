@@ -818,37 +818,40 @@ checkServerDB();
   <!-- Backdrop -->
   <div class="absolute inset-0" onclick="closeUsersModal()"></div>
   <!-- Panel -->
-  <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-6 z-10">
-    <div class="flex items-center justify-between mb-5">
+  <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 z-10 flex flex-col max-h-[90vh]">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between px-6 pt-6 pb-4 shrink-0">
       <h2 class="text-lg font-bold text-slate-800">User Management</h2>
       <button onclick="closeUsersModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
     </div>
 
-    <!-- User list -->
-    <div class="mb-1">
+    <!-- User list (scrollable) -->
+    <div class="overflow-y-auto px-6 flex-1">
       <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Users</h3>
       <div id="users-list" class="min-h-[40px]"></div>
     </div>
 
-    <!-- Add user -->
-    <div class="border-t border-slate-200 pt-4 mt-4">
+    <!-- Add user (pinned to bottom) -->
+    <div class="border-t border-slate-200 px-6 py-5 shrink-0">
       <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Add User</h3>
-      <div class="flex gap-2">
-        <input id="new-username" type="text" placeholder="Username" autocomplete="off"
-               class="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400"
-               onkeydown="if(event.key==='Enter') addUser()">
-        <input id="new-password" type="password" placeholder="Password"
-               class="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400"
-               onkeydown="if(event.key==='Enter') addUser()">
+      <div class="space-y-2">
+        <div class="flex gap-2">
+          <input id="new-username" type="text" placeholder="Username" autocomplete="off"
+                 class="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400"
+                 onkeydown="if(event.key==='Enter') addUser()">
+          <input id="new-password" type="password" placeholder="Password"
+                 class="flex-1 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-indigo-400"
+                 onkeydown="if(event.key==='Enter') addUser()">
+        </div>
         <button onclick="addUser()"
-                class="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold px-4 py-1.5 rounded-lg transition shrink-0">
-          Add
+                class="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold py-2 rounded-lg transition">
+          Add User
         </button>
       </div>
+      <p id="modal-msg" class="text-xs mt-3"></p>
     </div>
 
-    <!-- Status message -->
-    <p id="modal-msg" class="text-xs mt-3"></p>
   </div>
 </div>
 
