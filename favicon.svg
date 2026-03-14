@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="6" fill="#4338ca"/>
+  <!-- person left -->
+  <circle cx="11" cy="10" r="4" fill="white"/>
+  <path d="M3 26c0-5 3.6-8 8-8s8 3 8 8" fill="white"/>
+  <!-- person right (offset, slightly transparent) -->
+  <circle cx="21" cy="10" r="4" fill="white" opacity="0.65"/>
+  <path d="M13 26c0-5 3.6-8 8-8s8 3 8 8" fill="white" opacity="0.65"/>
+</svg>

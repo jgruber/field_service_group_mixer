@@ -51,6 +51,10 @@ def _auth_required(f):
 def index():
     return send_file('index.html')
 
+@app.route('/favicon.svg')
+def favicon():
+    return send_file('favicon.svg', mimetype='image/svg+xml')
+
 @app.route('/data/congregation.db', methods=['GET'])
 @_auth_required
 def get_db():
