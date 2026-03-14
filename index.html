@@ -153,6 +153,9 @@
 </main>
 
 <script>
+// ─── Constants ─────────────────────────────────────────────────────────────
+const UNASSIGNED_ID = 0; // sentinel for families with no field service group (DB IDs are positive)
+
 // ─── State ─────────────────────────────────────────────────────────────────
 const state = {
   db:                null,
@@ -275,6 +278,7 @@ function buildState() {
   // Field service groups
   state.groups        = [];
   state.groupFamilies = {};
+  state.groupFamilies[UNASSIGNED_ID] = []; // families with no FSG
   const gRes = db.exec(
     'SELECT id, name, overseer, overseer_id, assistant, assistant_id, phone FROM field_service_groups ORDER BY name'
   );
@@ -326,17 +330,16 @@ function buildState() {
     for (const [id, name, groupId, head, city] of fRes[0].values) {
       const persons = byFamily[id] || [];
       if (persons.length === 0) continue; // skip families with no non-moved members
+      const assignedId = (groupId && state.groupFamilies[groupId]) ? groupId : UNASSIGNED_ID;
       state.families[id] = {
         id,
-        name:    name    || '(Unknown)',
-        groupId: groupId || null,
-        head:    head    || '',
-        city:    city    || '',
+        name:    name || '(Unknown)',
+        groupId: assignedId,
+        head:    head || '',
+        city:    city || '',
         persons,
       };
-      if (groupId && state.groupFamilies[groupId]) {
-        state.groupFamilies[groupId].push(id);
-      }
+      state.groupFamilies[assignedId].push(id);
     }
   }
 }
@@ -506,7 +509,8 @@ function moveFamily(familyId, fromGroupId, toGroupId) {
   state.families[familyId].groupId = toGroupId;
 
   // Persist to in-memory DB and save to server
-  state.db.run('UPDATE families SET field_service_group_id = ? WHERE id = ?', [toGroupId, familyId]);
+  state.db.run('UPDATE families SET field_service_group_id = ? WHERE id = ?',
+    [toGroupId === UNASSIGNED_ID ? null : toGroupId, familyId]);
   persistDB();
 
   rerenderGroup(fromGroupId);
@@ -580,7 +584,10 @@ function openFamilyPanel(e, familyId) {
     state.groups
       .filter(g => g.id !== family.groupId)
       .map(g => `<option value="${g.id}">${h(g.name)}</option>`)
-      .join('');
+      .join('') +
+    (family.groupId !== UNASSIGNED_ID
+      ? `<option value="${UNASSIGNED_ID}">Unassigned</option>`
+      : '');
 
   document.getElementById('family-panel').style.display = 'flex';
 }
@@ -721,6 +728,52 @@ function groupCardHTML(group) {
     </div>`;
 }
 
+function unassignedCardHTML() {
+  const gs         = groupStats(UNASSIGNED_ID);
+  const fids       = state.groupFamilies[UNASSIGNED_ID] ?? [];
+  const sortedFams = [...fids]
+    .map(id => state.families[id])
+    .filter(Boolean)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const familyListHTML = sortedFams.length
+    ? sortedFams.map(f => familyCardHTML(f)).join('')
+    : '<p class="text-slate-400 text-xs text-center py-6 italic">No unassigned families</p>';
+
+  return `
+    <div id="group-card-${UNASSIGNED_ID}"
+         class="bg-white rounded-xl shadow-sm flex flex-col overflow-hidden min-h-0">
+
+      <div class="bg-slate-400 text-white px-4 py-3 shrink-0">
+        <h2 class="font-bold text-base leading-tight">Unassigned</h2>
+        <div class="text-slate-100 text-[11px] mt-1">Drag families into a field service group</div>
+      </div>
+
+      <div class="grid grid-cols-5 border-b border-slate-100 bg-slate-50 shrink-0 divide-x divide-slate-100">
+        ${statPill('Families',  gs.families,  'text-slate-700')}
+        ${statPill('Elders',    gs.elders,    'text-blue-700')}
+        ${statPill('Min. Sv.',  gs.ms,        'text-emerald-700')}
+        ${statPill('Sp. Pio.',  gs.sp,        'text-purple-700')}
+        ${statPill('Reg. Pio.', gs.pioneers,  'text-teal-700')}
+      </div>
+      <div class="grid grid-cols-4 border-b border-slate-200 bg-slate-50 shrink-0 divide-x divide-slate-100">
+        ${statPill('Persons',   gs.persons,   'text-slate-700')}
+        ${statPill('Active',    gs.active,    'text-green-700')}
+        ${statPill('Inactive',  gs.inactive,  'text-red-600')}
+        ${statPill('Assoc.',    gs.associated,'text-orange-600')}
+      </div>
+
+      <div class="drop-zone flex-1 overflow-y-auto p-3 space-y-2 min-h-[96px] max-h-[480px] bg-slate-50/50"
+           data-group-id="${UNASSIGNED_ID}"
+           ondragover="onDragOver(event, ${UNASSIGNED_ID})"
+           ondragenter="onDragEnter(event, ${UNASSIGNED_ID})"
+           ondragleave="onDragLeave(event)"
+           ondrop="onDrop(event, ${UNASSIGNED_ID})">
+        ${familyListHTML}
+      </div>
+    </div>`;
+}
+
 // ─── Full render ───────────────────────────────────────────────────────────
 function renderAll() {
   document.getElementById('upload-placeholder').classList.add('hidden');
@@ -735,7 +788,7 @@ function renderAll() {
 
   renderSummaryBar();
   document.getElementById('groups-container').innerHTML =
-    state.groups.map(g => groupCardHTML(g)).join('');
+    state.groups.map(g => groupCardHTML(g)).join('') + unassignedCardHTML();
 }
 
 function renderSummaryBar() {
@@ -762,6 +815,10 @@ function renderSummaryBar() {
 function rerenderGroup(groupId) {
   const existing = document.getElementById(`group-card-${groupId}`);
   if (!existing) return;
+  if (groupId === UNASSIGNED_ID) {
+    existing.outerHTML = unassignedCardHTML();
+    return;
+  }
   const group = state.groups.find(g => g.id === groupId);
   if (!group) return;
   existing.outerHTML = groupCardHTML(group);
