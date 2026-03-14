@@ -22,6 +22,25 @@
     @keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
     #family-panel[style*="flex"] > .panel-inner { animation: slideUp 0.2s ease-out; }
     #family-panel[style*="flex"]                { animation: fadeIn  0.15s ease-out; }
+
+    /* ── Print styles ── */
+    #print-view { display: none; }
+    @media print {
+      body > *          { display: none !important; }
+      #print-view       { display: block !important; font-family: sans-serif; font-size: 10pt; color: #000; }
+      #print-view h1    { font-size: 15pt; margin: 0 0 3pt; }
+      #print-view .print-date { font-size: 9pt; color: #555; margin-bottom: 16pt; }
+      #print-view h2    { font-size: 12pt; font-weight: bold; margin: 14pt 0 2pt; border-bottom: 0.75pt solid #333; padding-bottom: 2pt; }
+      #print-view .group-meta { font-size: 9pt; color: #444; margin-bottom: 5pt; }
+      #print-view table { width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 4pt; }
+      #print-view th    { background: #e8e8e8; font-weight: bold; text-align: center; border: 0.5pt solid #999; padding: 2pt 4pt; }
+      #print-view th:first-child { text-align: left; }
+      #print-view td    { border: 0.5pt solid #bbb; padding: 2pt 4pt; text-align: center; }
+      #print-view td:first-child { text-align: left; }
+      #print-view tr.total-row td { font-weight: bold; background: #f0f0f0; }
+      #print-view .group-section  { page-break-inside: avoid; }
+      @page { margin: 1.5cm; }
+    }
   </style>
 </head>
 <body class="bg-slate-100 min-h-screen font-sans">
@@ -39,6 +58,14 @@
               class="hidden flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
               onclick="showGroupsView()">
         ← Groups
+      </button>
+      <button id="print-btn"
+              class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
+              onclick="printGroups()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v8H6v-8z"/>
+        </svg>
+        Print
       </button>
       <button id="upload-btn"
               class="flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
@@ -434,9 +461,27 @@ function moveFamily(familyId, fromGroupId, toGroupId) {
   state.groupFamilies[fromGroupId] = state.groupFamilies[fromGroupId].filter(id => id !== familyId);
   state.groupFamilies[toGroupId].push(familyId);
   state.families[familyId].groupId = toGroupId;
+
+  // Persist to in-memory DB and save to server
+  state.db.run('UPDATE families SET field_service_group_id = ? WHERE id = ?', [toGroupId, familyId]);
+  persistDB();
+
   rerenderGroup(fromGroupId);
   rerenderGroup(toGroupId);
   renderSummaryBar();
+}
+
+async function persistDB() {
+  try {
+    const data = state.db.export();
+    await fetch('/data/congregation.db', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: data,
+    });
+  } catch {
+    // No-op when running without Flask
+  }
 }
 
 // ─── View helpers ──────────────────────────────────────────────────────────
@@ -450,6 +495,8 @@ function showUploadScreen() {
   document.getElementById('groups-view').classList.add('hidden');
   document.getElementById('upload-placeholder').classList.remove('hidden');
   if (state.db) document.getElementById('back-btn').classList.remove('hidden');
+  document.getElementById('print-btn').classList.add('hidden');
+  document.getElementById('print-btn').classList.remove('flex');
   // Reflect current server DB state
   document.getElementById('server-db-section').classList.toggle('hidden', !serverDbExists);
 }
@@ -636,6 +683,8 @@ function renderAll() {
   document.getElementById('upload-placeholder').classList.add('hidden');
   document.getElementById('groups-view').classList.remove('hidden');
   document.getElementById('back-btn').classList.add('hidden');
+  document.getElementById('print-btn').classList.remove('hidden');
+  document.getElementById('print-btn').classList.add('flex');
 
   const nameEl = document.getElementById('congregation-name');
   nameEl.textContent = state.congregationName;
@@ -830,6 +879,74 @@ function showModalMsg(msg, isError = false) {
   el.className = `text-xs mt-3 ${isError ? 'text-red-600' : 'text-green-600'}`;
 }
 
+// ─── Print ─────────────────────────────────────────────────────────────────
+function printGroups() {
+  const date = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  let html = `
+    <h1>${h(state.congregationName)} — Field Service Groups</h1>
+    <div class="print-date">Printed ${date}</div>`;
+
+  for (const group of state.groups) {
+    const fids       = state.groupFamilies[group.id] ?? [];
+    const sortedFams = fids.map(id => state.families[id]).filter(Boolean)
+                           .sort((a, b) => a.name.localeCompare(b.name));
+    const gs = groupStats(group.id);
+
+    const meta = [
+      group.overseer  ? `Overseer: ${h(group.overseer)}`   : '',
+      group.assistant ? `Assistant: ${h(group.assistant)}` : '',
+      group.phone     ? `Phone: ${h(group.phone)}`         : '',
+    ].filter(Boolean).join(' · ');
+
+    const rows = sortedFams.map(f => {
+      const fs = familyStats(f.id);
+      return `<tr>
+        <td>${h(f.name)}</td>
+        <td>${fs.total}</td>
+        <td>${fs.elders    || ''}</td>
+        <td>${fs.ms        || ''}</td>
+        <td>${fs.sp        || ''}</td>
+        <td>${fs.pioneers  || ''}</td>
+        <td>${fs.active    || ''}</td>
+        <td>${fs.inactive  || ''}</td>
+        <td>${fs.associated|| ''}</td>
+      </tr>`;
+    }).join('');
+
+    html += `
+      <div class="group-section">
+        <h2>${h(group.name)}</h2>
+        ${meta ? `<div class="group-meta">${meta}</div>` : ''}
+        <table>
+          <thead>
+            <tr>
+              <th>Family</th><th>Persons</th><th>Elders</th><th>MS</th>
+              <th>Sp. Pio.</th><th>Pioneers</th><th>Active</th><th>Inactive</th><th>Assoc.</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows}
+            <tr class="total-row">
+              <td>Totals (${gs.families} ${gs.families === 1 ? 'family' : 'families'})</td>
+              <td>${gs.persons}</td>
+              <td>${gs.elders    || ''}</td>
+              <td>${gs.ms        || ''}</td>
+              <td>${gs.sp        || ''}</td>
+              <td>${gs.pioneers  || ''}</td>
+              <td>${gs.active    || ''}</td>
+              <td>${gs.inactive  || ''}</td>
+              <td>${gs.associated|| ''}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  document.getElementById('print-view').innerHTML = html;
+  window.print();
+}
+
 // ─── Init ──────────────────────────────────────────────────────────────────
 ensureSQL().catch(console.error);
 checkServerDB();
@@ -877,6 +994,9 @@ checkServerDB();
 
   </div>
 </div>
+
+<!-- ─── Print view ───────────────────────────────────────────────────────── -->
+<div id="print-view"></div>
 
 <!-- ─── Family panel (click/tap) ─────────────────────────────────────────── -->
 <div id="family-panel"
