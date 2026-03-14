@@ -99,10 +99,16 @@
           <div class="font-semibold text-indigo-900 text-sm">📁 congregation.db</div>
           <div id="server-db-status" class="text-indigo-500 text-xs mt-0.5">Found on server · loads automatically on startup</div>
         </div>
-        <button onclick="deleteServerDB()"
-                class="shrink-0 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
-          Delete
-        </button>
+        <div class="flex gap-2 shrink-0">
+          <button onclick="downloadDB()"
+                  class="bg-indigo-100 hover:bg-indigo-200 text-indigo-700 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+            Download
+          </button>
+          <button onclick="deleteServerDB()"
+                  class="bg-red-100 hover:bg-red-200 text-red-700 text-xs font-semibold px-3 py-1.5 rounded-lg transition">
+            Delete
+          </button>
+        </div>
       </div>
     </div>
 
@@ -175,6 +181,25 @@ async function checkServerDB() {
   } catch {
     // Running without Flask (static file server) — no auto-load
   }
+}
+
+function downloadDB() {
+  const data = state.db ? state.db.export() : null;
+  if (!data) { alert('No database loaded.'); return; }
+  const now = new Date();
+  const ts  = now.getFullYear()
+    + '-' + String(now.getMonth() + 1).padStart(2, '0')
+    + '-' + String(now.getDate()).padStart(2, '0')
+    + '_' + String(now.getHours()).padStart(2, '0')
+    + '-' + String(now.getMinutes()).padStart(2, '0')
+    + '-' + String(now.getSeconds()).padStart(2, '0');
+  const blob = new Blob([data], { type: 'application/octet-stream' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `congregation_${ts}.db`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function deleteServerDB() {
