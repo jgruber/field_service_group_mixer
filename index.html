@@ -340,13 +340,13 @@ function familyStats(familyId) {
   const persons = state.families[familyId]?.persons ?? [];
   const s = { total: persons.length, elders: 0, ms: 0, sp: 0, pioneers: 0, active: 0, inactive: 0, associated: 0 };
   for (const p of persons) {
-    if (p.elder)                     s.elders++;
-    if (p.ms)                        s.ms++;
-    if (p.sp)                        s.sp++;
-    if (p.pioneer)                   s.pioneers++;
-    if (!p.inactive)                 s.active++;
-    else                             s.inactive++;
-    if (p.category === 'associated') s.associated++;
+    if (p.elder)                          s.elders++;
+    if (p.ms)                             s.ms++;
+    if (p.sp)                             s.sp++;
+    if (p.pioneer)                        s.pioneers++;
+    if (p.category === 'associated')      s.associated++;
+    else if (!p.inactive)                 s.active++;
+    else                                  s.inactive++;
   }
   return s;
 }
@@ -547,9 +547,9 @@ function memberBadges(p) {
   if (p.ms)                        b.push(`<span class="bg-emerald-100 text-emerald-700 text-[10px] font-semibold px-1.5 py-0.5 rounded">Min. Svt</span>`);
   if (p.sp)                        b.push(`<span class="bg-purple-100  text-purple-700  text-[10px] font-semibold px-1.5 py-0.5 rounded">Sp. Pioneer</span>`);
   if (p.pioneer)                   b.push(`<span class="bg-teal-100    text-teal-700    text-[10px] font-semibold px-1.5 py-0.5 rounded">Pioneer</span>`);
-  if (p.inactive)                  b.push(`<span class="bg-red-100     text-red-600     text-[10px] font-semibold px-1.5 py-0.5 rounded">Inactive</span>`);
-  else                             b.push(`<span class="bg-green-100   text-green-700   text-[10px] font-semibold px-1.5 py-0.5 rounded">Active</span>`);
   if (p.category === 'associated') b.push(`<span class="bg-orange-100  text-orange-600  text-[10px] font-semibold px-1.5 py-0.5 rounded">Associated</span>`);
+  else if (p.inactive)             b.push(`<span class="bg-red-100     text-red-600     text-[10px] font-semibold px-1.5 py-0.5 rounded">Inactive</span>`);
+  else                             b.push(`<span class="bg-green-100   text-green-700   text-[10px] font-semibold px-1.5 py-0.5 rounded">Active</span>`);
   return b.join('');
 }
 
