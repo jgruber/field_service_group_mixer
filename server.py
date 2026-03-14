@@ -2,7 +2,6 @@ import os
 import json
 from functools import wraps
 from flask import Flask, send_file, request, abort, Response, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 
@@ -15,7 +14,7 @@ USERS_FILE = os.path.join(DATA_DIR, 'users.json')
 def load_users():
     if not os.path.exists(USERS_FILE):
         os.makedirs(DATA_DIR, exist_ok=True)
-        users = {'admin': generate_password_hash('readme')}
+        users = {'admin': 'readme'}
         _save_users(users)
         return users
     with open(USERS_FILE) as f:
@@ -30,8 +29,7 @@ def _save_users(users):
 
 def _check_auth(username, password):
     users = load_users()
-    hashed = users.get(username)
-    return bool(hashed and check_password_hash(hashed, password))
+    return users.get(username) == password
 
 def _auth_required(f):
     @wraps(f)
@@ -94,7 +92,7 @@ def add_user():
     users = load_users()
     if username in users:
         return jsonify({'error': f'User "{username}" already exists.'}), 409
-    users[username] = generate_password_hash(password)
+    users[username] = password
     _save_users(users)
     return jsonify({'message': 'User created.'}), 201
 
@@ -108,7 +106,7 @@ def change_password(username):
     users = load_users()
     if username not in users:
         return jsonify({'error': 'User not found.'}), 404
-    users[username] = generate_password_hash(password)
+    users[username] = password
     _save_users(users)
     return jsonify({'message': 'Password updated.'})
 

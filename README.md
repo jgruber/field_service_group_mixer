@@ -31,7 +31,7 @@ The Flask server requires HTTP Basic Authentication on all routes.
 
 **Change the default password immediately after first login** using the **Users** button in the app header.
 
-User credentials are stored as bcrypt-hashed passwords in `data/users.json` (excluded from version control). The file is created automatically with the default `admin` account on first startup if it does not already exist.
+User credentials are stored in plain text in `data/users.json` (excluded from version control). The file is created automatically with the default `admin` account on first startup if it does not already exist.
 
 > **Note:** HTTP Basic Authentication transmits credentials with every request. Run behind a TLS-terminating reverse proxy (nginx, Caddy, etc.) in any non-local deployment.
 
