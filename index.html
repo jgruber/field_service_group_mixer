@@ -363,6 +363,15 @@ function totalStats() {
 // ─── Assistant editing ─────────────────────────────────────────────────────
 const editingAssistant = new Set(); // groupIds with assistant dropdown open
 
+function persistGroupAssistant(groupId) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group || !state.db) return;
+  state.db.run(
+    'UPDATE field_service_groups SET assistant = ?, assistant_id = ? WHERE id = ?',
+    [group.assistant || null, group.assistant_id || null, groupId]
+  );
+}
+
 function getEligibleAssistants(groupId) {
   const group = state.groups.find(g => g.id === groupId);
   const eligible = [];
@@ -401,6 +410,8 @@ function setGroupAssistant(groupId, personIdStr) {
       }
     }
   }
+  persistGroupAssistant(groupId);
+  persistDB();
   rerenderGroup(groupId);
 }
 
@@ -455,6 +466,7 @@ function moveFamily(familyId, fromGroupId, toGroupId) {
       fromGroup.assistant    = null;
       fromGroup.assistant_id = null;
       editingAssistant.add(fromGroupId); // auto-open dropdown for reassignment
+      persistGroupAssistant(fromGroupId);
     }
   }
 
