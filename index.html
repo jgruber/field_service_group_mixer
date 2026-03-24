@@ -13,6 +13,7 @@
   <meta name="apple-mobile-web-app-title" content="FSG Mixer" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/sql-wasm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <style>
     .family-card.dragging    { opacity: 0.35; transform: rotate(1.5deg) scale(0.97); }
     .drop-zone.drag-over     { outline: 2px dashed #818cf8; background-color: #eef2ff !important; }
@@ -79,7 +80,7 @@
         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 12V4m0 0L8 8m4-4l4 4"/>
         </svg>
-        Upload Database
+        Populate Database
       </button>
       <button class="flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
               onclick="openUsersModal()">
@@ -128,6 +129,38 @@
         Choose File
         <input type="file" id="file-input" accept=".db,.sqlite,.sqlite3" class="hidden" />
       </label>
+    </div>
+
+    <!-- Remote URL download -->
+    <div class="bg-white rounded-2xl border border-slate-200 p-6 max-w-md w-full shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-700 mb-3">Download from URL</h2>
+      <div class="flex flex-col gap-2">
+        <div class="flex gap-2">
+          <input id="remote-url" type="url" placeholder="https://example.com"
+                 class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+          <button onclick="openQrScanner()" title="Scan QR code"
+                  class="shrink-0 border border-slate-300 hover:bg-slate-50 text-slate-600 rounded-lg px-2.5 py-2 transition">
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 7V5a2 2 0 012-2h2M17 3h2a2 2 0 012 2v2M21 17v2a2 2 0 01-2 2h-2M7 21H5a2 2 0 01-2-2v-2"/>
+              <rect x="7" y="7" width="4" height="4" rx="0.5" stroke-width="1.75"/>
+              <rect x="13" y="7" width="4" height="4" rx="0.5" stroke-width="1.75"/>
+              <rect x="7" y="13" width="4" height="4" rx="0.5" stroke-width="1.75"/>
+              <path stroke-linecap="round" d="M13 13h1.5M15.5 13H17v1.5M17 15.5V17h-1.5M15.5 17H13v-1.5"/>
+            </svg>
+          </button>
+        </div>
+        <div class="flex gap-2">
+          <input id="remote-username" type="text" placeholder="Username"
+                 class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+          <input id="remote-password" type="password" placeholder="Password"
+                 class="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+        </div>
+        <button onclick="fetchRemoteDB()"
+                class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition">
+          Download
+        </button>
+        <div id="remote-error" class="hidden text-red-600 text-xs mt-1"></div>
+      </div>
     </div>
 
   </div>
@@ -546,6 +579,99 @@ function showUploadScreen() {
   document.getElementById('print-btn').classList.remove('flex');
   // Reflect current server DB state
   document.getElementById('server-db-section').classList.toggle('hidden', !serverDbExists);
+}
+
+// ─── Remote DB fetch ───────────────────────────────────────────────────────
+async function fetchRemoteDB() {
+  const url      = document.getElementById('remote-url').value.trim();
+  const username = document.getElementById('remote-username').value.trim();
+  const password = document.getElementById('remote-password').value;
+  const errEl    = document.getElementById('remote-error');
+  errEl.classList.add('hidden');
+  errEl.textContent = '';
+
+  if (!url) { errEl.textContent = 'Please enter a URL.'; errEl.classList.remove('hidden'); return; }
+
+  let fetchUrl;
+  try {
+    const parsed = new URL(url);
+    parsed.pathname = '/download/database';
+    parsed.search = '';
+    parsed.hash = '';
+    fetchUrl = parsed.toString();
+  } catch {
+    errEl.textContent = 'Please enter a valid URL.'; errEl.classList.remove('hidden'); return;
+  }
+
+  const headers = {};
+  if (username || password) {
+    headers['Authorization'] = 'Basic ' + btoa(username + ':' + password);
+  }
+
+  setLoading(true);
+  try {
+    const res = await fetch(fetchUrl, { headers });
+    if (!res.ok) throw new Error(`Server returned ${res.status} ${res.statusText}`);
+    const buf = await res.arrayBuffer();
+    await loadBuffer(buf);
+  } catch (e) {
+    errEl.textContent = e.message || 'Failed to download database.';
+    errEl.classList.remove('hidden');
+  } finally {
+    setLoading(false);
+  }
+}
+
+// ─── QR Scanner ────────────────────────────────────────────────────────────
+let _qrStream = null;
+let _qrRaf   = null;
+
+function openQrScanner() {
+  document.getElementById('qr-modal').classList.remove('hidden');
+  document.getElementById('qr-status').textContent = 'Point the camera at a QR code…';
+  const video  = document.getElementById('qr-video');
+  const canvas = document.getElementById('qr-canvas');
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+    .then(stream => {
+      _qrStream = stream;
+      video.srcObject = stream;
+      video.play();
+      video.addEventListener('loadedmetadata', () => _qrScanFrame(video, canvas), { once: true });
+    })
+    .catch(err => {
+      document.getElementById('qr-status').textContent = 'Camera access denied: ' + err.message;
+    });
+}
+
+function _qrScanFrame(video, canvas) {
+  if (!_qrStream) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width  = video.videoWidth;
+  canvas.height = video.videoHeight;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const code = jsQR(imageData.data, imageData.width, imageData.height);
+  if (code) {
+    try {
+      const decoded = JSON.parse(atob(code.data));
+      if (decoded.url)      document.getElementById('remote-url').value      = decoded.url;
+      if (decoded.username) document.getElementById('remote-username').value = decoded.username;
+      if (decoded.password) document.getElementById('remote-password').value = decoded.password;
+      closeQrScanner();
+      return;
+    } catch {
+      document.getElementById('qr-status').textContent = 'Invalid QR code format.';
+    }
+  }
+  _qrRaf = requestAnimationFrame(() => _qrScanFrame(video, canvas));
+}
+
+function closeQrScanner() {
+  cancelAnimationFrame(_qrRaf);
+  if (_qrStream) { _qrStream.getTracks().forEach(t => t.stop()); _qrStream = null; }
+  const video = document.getElementById('qr-video');
+  video.srcObject = null;
+  document.getElementById('qr-modal').classList.add('hidden');
 }
 
 // ─── Family panel ──────────────────────────────────────────────────────────
@@ -1128,6 +1254,29 @@ checkServerDB();
       </div>
     </div>
 
+  </div>
+</div>
+
+<!-- ─── QR Scanner Modal ──────────────────────────────────────────────────── -->
+<div id="qr-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-sm mx-4 overflow-hidden">
+    <div class="flex items-center justify-between px-4 py-3 border-b border-slate-200">
+      <span class="font-semibold text-slate-700 text-sm">Scan QR Code</span>
+      <button onclick="closeQrScanner()" class="text-slate-400 hover:text-slate-600 transition">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div class="relative bg-black">
+      <video id="qr-video" class="w-full" autoplay playsinline muted></video>
+      <canvas id="qr-canvas" class="hidden"></canvas>
+      <!-- targeting reticle -->
+      <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div class="w-48 h-48 border-2 border-white/70 rounded-lg"></div>
+      </div>
+    </div>
+    <p id="qr-status" class="text-xs text-slate-400 text-center px-4 py-3">Point the camera at a QR code…</p>
   </div>
 </div>
 
