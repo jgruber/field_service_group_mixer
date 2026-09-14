@@ -18,7 +18,7 @@ The `congregation.db` SQLite database used by this application can be exported f
 - **Congregation-wide summary bar** — totals across all groups update in real time
 - **Local groups** — create a field service group that does not exist in the source database yet (with its own overseer and assistant), so an arrangement can be planned before it is made official
 - **Delete any group** — in this copy of the database only; a re-import restores anything that came from the source
-- **Drag & drop** — move families between field service groups; all stats update instantly
+- **Drag & drop** — move families between field service groups; all stats update instantly, and the group is written to both the family and its members
 - **Editable assistant** — assign any elder or ministerial servant in the group as the assistant; automatically cleared if the assistant's family is moved out
 - **Family member tooltip** — hover any family card to see each member with their role and status indicators
 - **Moved members excluded** — only persons and families with `moved = false` are included
@@ -94,6 +94,9 @@ added to the system that feeds the exported database.
   overseer, assistant, and phone number. A new group has no families yet, so the
   overseer and assistant are chosen from every elder and ministerial servant in
   the congregation rather than from the group's own members.
+- Choosing an overseer fills the phone number in with that person's mobile,
+  matching how the source data sets a group's phone. Typing your own number
+  instead keeps it — a later change of overseer will not overwrite it.
 - Local group cards are **green** and carry a **Local** badge so they are easy to
   tell apart from groups that came out of the source database. Their headers have
   ✏️ edit and 🗑 delete buttons; imported groups have 🗑 only and cannot be renamed.
@@ -107,9 +110,13 @@ a download / re-upload of that file.
 
 Any group can be deleted, imported ones included, and either way it is a change
 to **this copy of the database only** — the source system is never written to.
-The families in it return to **Unassigned**. Deleting an imported group is a
-planning move rather than a loss: populating the database from the source again
-brings it back.
+Everyone who was in the group is left **unassigned**: both the `families` and
+the `persons` rows have their `field_service_group_id` and
+`field_service_group_name` cleared, and that is done by group id rather than
+family by family, so records the display leaves out — people who moved away, and
+families with no active members — are unassigned too rather than left pointing at
+a group that no longer exists. Deleting an imported group is a planning move
+rather than a loss: populating the database from the source again brings it back.
 
 ### The imported database wins
 
@@ -129,10 +136,16 @@ The application expects a SQLite database exported from [congregation-directory]
 |---|---|
 | `congregations` | `id`, `name` |
 | `field_service_groups` | `id`, `congregation_id`, `name`, `overseer`, `overseer_id`, `assistant`, `assistant_id`, `phone` |
-| `families` | `id`, `name`, `field_service_group_id`, `family_head`, `city`, `moved` |
-| `persons` | `id`, `family_id`, `display_name`, `category`, `elder`, `ministerial_servant`, `special_pioneer`, `pioneer`, `inactive`, `moved`, `removed` |
+| `families` | `id`, `name`, `field_service_group_id`, `field_service_group_name`, `family_head`, `city`, `moved` |
+| `persons` | `id`, `family_id`, `display_name`, `mobile`, `category`, `elder`, `ministerial_servant`, `special_pioneer`, `pioneer`, `inactive`, `moved`, `removed`, `field_service_group_id`, `field_service_group_name` |
 
 Only records where `moved = 0` are included in the display and statistics.
+
+Group membership is stored in four places — the id and the name on both
+`families` and `persons` — so moving a family, renaming a local group, or
+deleting a group writes all of them. Otherwise the exported database
+contradicts itself, with a family reading as moved while its members still
+name the group they came from.
 
 ## Tech Stack
 

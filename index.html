@@ -367,7 +367,7 @@ function buildState() {
   const byFamily = {};
   const pRes = db.exec(`
     SELECT id, family_id, category,
-           display_name,
+           display_name, mobile,
            elder, ministerial_servant, special_pioneer,
            pioneer, inactive
     FROM persons
@@ -375,13 +375,14 @@ function buildState() {
       AND (removed IS NULL OR removed = 0)
   `);
   if (pRes.length) {
-    for (const [id, family_id, category, displayName,
+    for (const [id, family_id, category, displayName, mobile,
                 elder, ms, sp, pioneer, inactive] of pRes[0].values) {
       if (!family_id) continue;
       if (!byFamily[family_id]) byFamily[family_id] = [];
       byFamily[family_id].push({
         id,
         displayName: displayName || '',
+        mobile:   mobile || '',
         category: category || 'publisher',
         elder:    !!elder,
         ms:       !!ms,
@@ -475,6 +476,7 @@ function totalStats() {
 // carries a negative id so it stays recognisable as not-yet-official.
 
 let _editingGroupId = null; // null while the modal is creating a new group
+let _autoFilledPhone = '';  // the mobile the dialog filled in, so a typed number is never overwritten
 
 function nextLocalGroupId() {
   return Math.min(0, ...state.groups.map(g => g.id)) - 1;
@@ -486,7 +488,7 @@ function getAllServants() {
   for (const family of Object.values(state.families)) {
     for (const p of family.persons) {
       if ((p.elder || p.ms) && !seen.has(p.id)) {
-        seen.set(p.id, { id: p.id, name: p.displayName || '(Unknown)', role: p.elder ? 'Elder' : 'MS' });
+        seen.set(p.id, { id: p.id, name: p.displayName || '(Unknown)', role: p.elder ? 'Elder' : 'MS', mobile: p.mobile || '' });
       }
     }
   }
@@ -514,9 +516,35 @@ function openGroupModal(groupId = null) {
   document.getElementById('group-overseer-select').innerHTML  = servantOptions(group?.overseer_id  ?? null);
   document.getElementById('group-assistant-select').innerHTML = servantOptions(group?.assistant_id ?? null);
 
+  // Treat an existing phone that already matches the overseer's mobile as
+  // auto-filled, so changing the overseer moves it on; anything else was typed
+  // by hand and is left alone.
+  const ovMobile = mobileOf(group?.overseer_id ?? null);
+  _autoFilledPhone = (group?.phone && group.phone === ovMobile) ? ovMobile : '';
+
   showGroupModalError('');
   document.getElementById('group-modal').style.display = 'flex';
   document.getElementById('group-name-input').focus();
+}
+
+function mobileOf(personId) {
+  return personId ? (getAllServants().find(p => p.id === personId)?.mobile ?? '') : '';
+}
+
+// The source data sets a group's phone to its overseer's mobile, so follow that
+// when an overseer is picked — without clobbering a number typed by hand.
+function onOverseerChange() {
+  const phoneEl = document.getElementById('group-phone-input');
+  const current = phoneEl.value.trim();
+  if (current !== '' && current !== _autoFilledPhone) return;
+  const mobile = mobileOf(idFromSelect('group-overseer-select'));
+  phoneEl.value    = mobile;
+  _autoFilledPhone = mobile;
+}
+
+function idFromSelect(id) {
+  const v = document.getElementById(id).value;
+  return v ? parseInt(v) : null;
 }
 
 function closeGroupModal() {
@@ -535,9 +563,8 @@ function saveGroupModal() {
   const phone = document.getElementById('group-phone-input').value.trim();
   const servants    = getAllServants();
   const nameOf      = id => (id ? (servants.find(p => p.id === id)?.name ?? '') : '');
-  const idFrom      = sel => { const v = document.getElementById(sel).value; return v ? parseInt(v) : null; };
-  const overseerId  = idFrom('group-overseer-select');
-  const assistantId = idFrom('group-assistant-select');
+  const overseerId  = idFromSelect('group-overseer-select');
+  const assistantId = idFromSelect('group-assistant-select');
   const overseer    = nameOf(overseerId);
   const assistant   = nameOf(assistantId);
 
@@ -589,6 +616,9 @@ function updateLocalGroup(groupId, name, overseer, overseerId, assistant, assist
       WHERE id = ?`,
     [name, overseer || null, overseerId, assistant || null, assistantId, phone || null, groupId]
   );
+  // The group name is denormalised onto families and persons; keep it in step.
+  state.db.run('UPDATE families SET field_service_group_name = ? WHERE field_service_group_id = ?', [name, groupId]);
+  state.db.run('UPDATE persons  SET field_service_group_name = ? WHERE field_service_group_id = ?', [name, groupId]);
   Object.assign(group, {
     name, overseer, overseer_id: overseerId,
     assistant: assistant || null, assistant_id: assistantId, phone,
@@ -616,8 +646,20 @@ function deleteGroup(groupId) {
   for (const fid of fids) {
     state.families[fid].groupId = UNASSIGNED_ID;
     state.groupFamilies[UNASSIGNED_ID].push(fid);
-    state.db.run('UPDATE families SET field_service_group_id = NULL WHERE id = ?', [fid]);
   }
+
+  // Clear by group id rather than family by family: families and persons the
+  // view leaves out — those who moved away, and families with no active members
+  // — point at this group too, and would be left referencing a group that no
+  // longer exists. Everyone who was in it ends up unassigned.
+  state.db.run(
+    'UPDATE families SET field_service_group_id = NULL, field_service_group_name = NULL WHERE field_service_group_id = ?',
+    [groupId]
+  );
+  state.db.run(
+    'UPDATE persons SET field_service_group_id = NULL, field_service_group_name = NULL WHERE field_service_group_id = ?',
+    [groupId]
+  );
   state.db.run('DELETE FROM field_service_groups WHERE id = ?', [groupId]);
 
   delete state.groupFamilies[groupId];
@@ -729,6 +771,23 @@ function onDrop(e, targetGroupId) {
   moveFamily(familyId, sourceGroupId, targetGroupId);
 }
 
+// Both families and persons carry the group id and the group name, so a change
+// of group has to write all four columns or the exported database contradicts
+// itself — the family would read as moved while its members still name the old
+// group.
+function persistFamilyGroup(familyId, groupId) {
+  const gid   = groupId === UNASSIGNED_ID ? null : groupId;
+  const gname = gid ? (state.groups.find(g => g.id === gid)?.name ?? null) : null;
+  state.db.run(
+    'UPDATE families SET field_service_group_id = ?, field_service_group_name = ? WHERE id = ?',
+    [gid, gname, familyId]
+  );
+  state.db.run(
+    'UPDATE persons SET field_service_group_id = ?, field_service_group_name = ? WHERE family_id = ?',
+    [gid, gname, familyId]
+  );
+}
+
 function moveFamily(familyId, fromGroupId, toGroupId) {
   // If a member of the moved family is the source group's assistant, clear it
   const fromGroup = state.groups.find(g => g.id === fromGroupId);
@@ -747,8 +806,7 @@ function moveFamily(familyId, fromGroupId, toGroupId) {
   state.families[familyId].groupId = toGroupId;
 
   // Persist to in-memory DB and save to server
-  state.db.run('UPDATE families SET field_service_group_id = ? WHERE id = ?',
-    [toGroupId === UNASSIGNED_ID ? null : toGroupId, familyId]);
+  persistFamilyGroup(familyId, toGroupId);
   persistDB();
 
   rerenderGroup(fromGroupId);
@@ -1489,7 +1547,7 @@ checkServerDB();
       </div>
       <div>
         <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5" for="group-overseer-select">Overseer</label>
-        <select id="group-overseer-select"
+        <select id="group-overseer-select" onchange="onOverseerChange()"
                 class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-indigo-400">
         </select>
       </div>
@@ -1500,7 +1558,7 @@ checkServerDB();
         </select>
       </div>
       <div>
-        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5" for="group-phone-input">Phone <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5" for="group-phone-input">Phone <span class="normal-case font-normal text-slate-400">(the overseer's mobile, unless you change it)</span></label>
         <input id="group-phone-input" type="tel" placeholder="555-123-4567" autocomplete="off"
                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
                onkeydown="if(event.key==='Enter') saveGroupModal()">
