@@ -16,6 +16,7 @@ The `congregation.db` SQLite database used by this application can be exported f
   - Special Pioneers, Regular Pioneers
   - Active, Inactive, Associated
 - **Congregation-wide summary bar** — totals across all groups update in real time
+- **Local groups** — create a field service group that does not exist in the source database yet, so an arrangement can be planned before it is made official
 - **Drag & drop** — move families between field service groups; all stats update instantly
 - **Editable assistant** — assign any elder or ministerial servant in the group as the assistant; automatically cleared if the assistant's family is moved out
 - **Family member tooltip** — hover any family card to see each member with their role and status indicators
@@ -78,7 +79,30 @@ Then open [http://localhost:3000](http://localhost:3000).
 5. **Drag a family card** from one group and **drop it** onto another group to reassign it — stats update immediately.
 6. **Hover a family card** to see a tooltip listing each member with their role and status badges.
 7. Click the ✏️ pencil next to the assistant name to reassign from eligible elders and ministerial servants.
-8. To delete the server-side database or upload a new one, click **Upload Database** in the header.
+8. Click **New Group** in the header to create a *local* group — see [Local Groups](#local-groups) below.
+9. To delete the server-side database or upload a new one, click **Populate Database** in the header.
+
+## Local Groups
+
+A local group is a field service group created inside the mixer that the source
+database does not know about yet. It lets the secretary plan a new group —
+assigning families and choosing an overseer and assistant — before the group is
+added to the system that feeds the exported database.
+
+- Click **New Group** in the header, then give the group a name, an optional
+  overseer (any elder or ministerial servant in the congregation), and an
+  optional phone number.
+- Local group cards are **green** and carry a **Local** badge so they are easy to
+  tell apart from groups that came out of the source database. Their headers also
+  have ✏️ edit and 🗑 delete buttons; imported groups cannot be renamed or deleted.
+- Deleting a local group returns its families to **Unassigned**.
+- Printed reports label the group *"Local group — not yet in the source database."*
+
+Local groups are stored in the working copy of the database (with negative ids,
+so they never collide with ids assigned by the source), which means they survive
+a download / re-upload of that file. **Downloading a fresh database from the
+source replaces them**, and their families return to Unassigned — so once the
+arrangement is settled, add the group to the source system to make it permanent.
 
 ## Database Schema
 

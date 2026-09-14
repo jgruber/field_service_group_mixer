@@ -59,12 +59,20 @@
       <h1 class="text-lg font-bold tracking-tight leading-none">Field Service Group Mixer</h1>
       <p id="congregation-name" class="text-indigo-200 text-xs mt-0.5 hidden"></p>
     </div>
-    <div class="flex items-center gap-3">
+    <div class="flex items-center justify-end flex-wrap gap-2 sm:gap-3">
       <span id="loading-text" class="hidden text-indigo-200 text-sm animate-pulse">Loading…</span>
       <button id="back-btn"
               class="hidden flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
               onclick="showGroupsView()">
         ← Groups
+      </button>
+      <button id="new-group-btn"
+              class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
+              onclick="openGroupModal()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+        </svg>
+        New Group
       </button>
       <button id="print-btn"
               class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
@@ -189,9 +197,14 @@
 // ─── Constants ─────────────────────────────────────────────────────────────
 const UNASSIGNED_ID = 0; // sentinel for families with no field service group (DB IDs are positive)
 
+// Groups created here that do not exist in the source database yet are stored
+// with negative ids; every group imported from the source has a positive id.
+function isLocalGroup(groupId) { return groupId < 0; }
+
 // ─── State ─────────────────────────────────────────────────────────────────
 const state = {
   db:                null,
+  congregationId:    null,
   congregationName:  '',
   groups:            [],
   families:          {},
@@ -304,9 +317,10 @@ async function loadBuffer(buf) {
 function buildState() {
   const db = state.db;
 
-  // Congregation name
-  const cRes = db.exec('SELECT name FROM congregations LIMIT 1');
-  state.congregationName = cRes.length ? (cRes[0].values[0][0] || 'Congregation') : 'Congregation';
+  // Congregation (id is needed when creating local groups)
+  const cRes = db.exec('SELECT id, name FROM congregations LIMIT 1');
+  state.congregationId   = cRes.length ? cRes[0].values[0][0] : null;
+  state.congregationName = cRes.length ? (cRes[0].values[0][1] || 'Congregation') : 'Congregation';
 
   // Field service groups
   state.groups        = [];
@@ -425,6 +439,146 @@ function totalStats() {
     s.associated += gs.associated;
   }
   return s;
+}
+
+// ─── Local group management ────────────────────────────────────────────────
+// A "local" group is one the secretary creates here to plan an arrangement that
+// the source database does not know about yet. It is written into this copy of
+// the database like any other group so families can be assigned to it, but it
+// carries a negative id so it stays recognisable as not-yet-official.
+
+let _editingGroupId = null; // null while the modal is creating a new group
+
+function nextLocalGroupId() {
+  return Math.min(0, ...state.groups.map(g => g.id)) - 1;
+}
+
+// Every elder / ministerial servant in the congregation — candidates for overseer
+function getAllServants() {
+  const seen = new Map();
+  for (const family of Object.values(state.families)) {
+    for (const p of family.persons) {
+      if ((p.elder || p.ms) && !seen.has(p.id)) {
+        seen.set(p.id, { id: p.id, name: p.displayName || '(Unknown)', role: p.elder ? 'Elder' : 'MS' });
+      }
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function openGroupModal(groupId = null) {
+  if (!state.db) { alert('Load a database first.'); return; }
+  const group = groupId !== null ? state.groups.find(g => g.id === groupId) : null;
+  _editingGroupId = group ? group.id : null;
+
+  document.getElementById('group-modal-title').textContent = group ? 'Edit Local Group' : 'New Local Group';
+  document.getElementById('group-name-input').value  = group?.name  ?? '';
+  document.getElementById('group-phone-input').value = group?.phone ?? '';
+
+  document.getElementById('group-overseer-select').innerHTML =
+    '<option value="">— None —</option>' +
+    getAllServants().map(p =>
+      `<option value="${p.id}" ${group?.overseer_id === p.id ? 'selected' : ''}>${h(p.name)} (${p.role})</option>`
+    ).join('');
+
+  showGroupModalError('');
+  document.getElementById('group-modal').style.display = 'flex';
+  document.getElementById('group-name-input').focus();
+}
+
+function closeGroupModal() {
+  document.getElementById('group-modal').style.display = 'none';
+  _editingGroupId = null;
+}
+
+function showGroupModalError(msg) {
+  const el = document.getElementById('group-modal-error');
+  el.textContent = msg;
+  el.classList.toggle('hidden', !msg);
+}
+
+function saveGroupModal() {
+  const name  = document.getElementById('group-name-input').value.trim();
+  const phone = document.getElementById('group-phone-input').value.trim();
+  const overseerIdStr = document.getElementById('group-overseer-select').value;
+  const overseerId    = overseerIdStr ? parseInt(overseerIdStr) : null;
+  const overseer      = overseerId
+    ? (getAllServants().find(p => p.id === overseerId)?.name ?? '')
+    : '';
+
+  if (!name) { showGroupModalError('Group name is required.'); return; }
+  const clash = state.groups.find(g =>
+    g.id !== _editingGroupId && g.name.toLowerCase() === name.toLowerCase());
+  if (clash) { showGroupModalError(`A group named "${name}" already exists.`); return; }
+
+  try {
+    if (_editingGroupId === null) createLocalGroup(name, overseer, overseerId, phone);
+    else                          updateLocalGroup(_editingGroupId, name, overseer, overseerId, phone);
+  } catch (err) {
+    console.error(err);
+    showGroupModalError('Could not save the group: ' + err.message);
+    return;
+  }
+
+  closeGroupModal();
+  persistDB();
+  renderAll();
+}
+
+function createLocalGroup(name, overseer, overseerId, phone) {
+  const id = nextLocalGroupId();
+  state.db.run(
+    `INSERT INTO field_service_groups
+       (id, congregation_id, name, overseer, overseer_id, assistant, assistant_id, phone)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`,
+    [id, state.congregationId, name, overseer || null, overseerId, phone || null]
+  );
+  state.groups.push({
+    id, name, overseer, overseer_id: overseerId,
+    assistant: null, assistant_id: null, phone,
+  });
+  state.groupFamilies[id] = [];
+  sortGroups();
+}
+
+function updateLocalGroup(groupId, name, overseer, overseerId, phone) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group) return;
+  state.db.run(
+    'UPDATE field_service_groups SET name = ?, overseer = ?, overseer_id = ?, phone = ? WHERE id = ?',
+    [name, overseer || null, overseerId, phone || null, groupId]
+  );
+  Object.assign(group, { name, overseer, overseer_id: overseerId, phone });
+  sortGroups();
+}
+
+function deleteLocalGroup(groupId) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group || !isLocalGroup(groupId)) return;
+
+  const fids = [...(state.groupFamilies[groupId] ?? [])];
+  const note = fids.length
+    ? `\n\n${fids.length} famil${fids.length === 1 ? 'y' : 'ies'} will move back to Unassigned.`
+    : '';
+  if (!confirm(`Delete local group "${group.name}"?${note}`)) return;
+
+  for (const fid of fids) {
+    state.families[fid].groupId = UNASSIGNED_ID;
+    state.groupFamilies[UNASSIGNED_ID].push(fid);
+    state.db.run('UPDATE families SET field_service_group_id = NULL WHERE id = ?', [fid]);
+  }
+  state.db.run('DELETE FROM field_service_groups WHERE id = ?', [groupId]);
+
+  delete state.groupFamilies[groupId];
+  state.groups = state.groups.filter(g => g.id !== groupId);
+  editingAssistant.delete(groupId);
+
+  persistDB();
+  renderAll();
+}
+
+function sortGroups() {
+  state.groups.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // ─── Assistant editing ─────────────────────────────────────────────────────
@@ -569,14 +723,23 @@ function showGroupsView() {
   document.getElementById('upload-placeholder').classList.add('hidden');
   document.getElementById('groups-view').classList.remove('hidden');
   document.getElementById('back-btn').classList.add('hidden');
+  setGroupToolsVisible(true);
+}
+
+// Header buttons that only make sense while the groups grid is on screen
+function setGroupToolsVisible(on) {
+  for (const id of ['print-btn', 'new-group-btn']) {
+    const el = document.getElementById(id);
+    el.classList.toggle('hidden', !on);
+    el.classList.toggle('flex',   on);
+  }
 }
 
 function showUploadScreen() {
   document.getElementById('groups-view').classList.add('hidden');
   document.getElementById('upload-placeholder').classList.remove('hidden');
   if (state.db) document.getElementById('back-btn').classList.remove('hidden');
-  document.getElementById('print-btn').classList.add('hidden');
-  document.getElementById('print-btn').classList.remove('flex');
+  setGroupToolsVisible(false);
   // Reflect current server DB state
   document.getElementById('server-db-section').classList.toggle('hidden', !serverDbExists);
 }
@@ -709,7 +872,7 @@ function openFamilyPanel(e, familyId) {
   sel.innerHTML = '<option value="">— Select a group —</option>' +
     state.groups
       .filter(g => g.id !== family.groupId)
-      .map(g => `<option value="${g.id}">${h(g.name)}</option>`)
+      .map(g => `<option value="${g.id}">${h(g.name)}${isLocalGroup(g.id) ? ' (local)' : ''}</option>`)
       .join('') +
     (family.groupId !== UNASSIGNED_ID
       ? `<option value="${UNASSIGNED_ID}">Unassigned</option>`
@@ -785,6 +948,10 @@ function familyCardHTML(family) {
 }
 
 function groupCardHTML(group) {
+  const local        = isLocalGroup(group.id);
+  const c            = local
+    ? { header: 'bg-emerald-600', sub: 'text-emerald-100', selBg: 'bg-emerald-700', selBorder: 'border-emerald-400', btn: 'text-emerald-200' }
+    : { header: 'bg-indigo-600',  sub: 'text-indigo-200',  selBg: 'bg-indigo-700',  selBorder: 'border-indigo-400',  btn: 'text-indigo-300'  };
   const gs           = groupStats(group.id);
   const fids         = state.groupFamilies[group.id] ?? [];
   const sortedFams   = [...fids]
@@ -800,25 +967,48 @@ function groupCardHTML(group) {
     <div id="group-card-${group.id}"
          class="bg-white rounded-xl shadow-sm flex flex-col overflow-hidden min-h-0">
 
-      <div class="bg-indigo-600 text-white px-4 py-3 shrink-0">
-        <h2 class="font-bold text-base leading-tight">${h(group.name)}</h2>
-        <div class="text-indigo-200 text-[11px] space-y-1 mt-1">
+      <div class="${c.header} text-white px-4 py-3 shrink-0">
+        <div class="flex items-start justify-between gap-2">
+          <h2 class="font-bold text-base leading-tight min-w-0">
+            ${h(group.name)}
+            ${local
+              ? `<span class="bg-white/25 text-white text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide align-middle ml-1">Local</span>`
+              : ''}
+          </h2>
+          ${local
+            ? `<div class="flex gap-1.5 shrink-0">
+                 <button onclick="openGroupModal(${group.id})" title="Edit group"
+                         class="${c.btn} hover:text-white transition leading-none">
+                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H8v-2.414a2 2 0 01.586-1.414z"/>
+                   </svg>
+                 </button>
+                 <button onclick="deleteLocalGroup(${group.id})" title="Delete group"
+                         class="${c.btn} hover:text-white transition leading-none">
+                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                     <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M4 7h16"/>
+                   </svg>
+                 </button>
+               </div>`
+            : ''}
+        </div>
+        <div class="${c.sub} text-[11px] space-y-1 mt-1">
           ${group.overseer ? `<div>👤 ${h(group.overseer)}</div>` : ''}
           <div class="flex items-center gap-1.5 flex-wrap">
             <span>🤝</span>
             ${editingAssistant.has(group.id)
               ? `<select onchange="setGroupAssistant(${group.id}, this.value)"
-                         class="bg-indigo-700 border border-indigo-400 text-white text-[11px] rounded px-1.5 py-0.5">
+                         class="${c.selBg} border ${c.selBorder} text-white text-[11px] rounded px-1.5 py-0.5">
                    <option value="">— None —</option>
                    ${getEligibleAssistants(group.id).map(p =>
                      `<option value="${p.id}" ${group.assistant_id === p.id ? 'selected' : ''}>${h(p.name)} (${p.role})</option>`
                    ).join('')}
                  </select>
                  <button onclick="toggleAssistantEdit(${group.id})"
-                         class="text-indigo-300 hover:text-white leading-none" title="Cancel">✕</button>`
+                         class="${c.btn} hover:text-white leading-none" title="Cancel">✕</button>`
               : `<span class="${group.assistant ? '' : 'text-amber-300 italic'}">${h(group.assistant) || 'Not set'}</span>
                  <button onclick="toggleAssistantEdit(${group.id})"
-                         class="text-indigo-300 hover:text-white opacity-70 hover:opacity-100 transition leading-none" title="Change assistant">
+                         class="${c.btn} hover:text-white opacity-70 hover:opacity-100 transition leading-none" title="Change assistant">
                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                      <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H8v-2.414a2 2 0 01.586-1.414z"/>
                    </svg>
@@ -905,8 +1095,7 @@ function renderAll() {
   document.getElementById('upload-placeholder').classList.add('hidden');
   document.getElementById('groups-view').classList.remove('hidden');
   document.getElementById('back-btn').classList.add('hidden');
-  document.getElementById('print-btn').classList.remove('hidden');
-  document.getElementById('print-btn').classList.add('flex');
+  setGroupToolsVisible(true);
 
   const nameEl = document.getElementById('congregation-name');
   nameEl.textContent = state.congregationName;
@@ -1123,6 +1312,7 @@ function printGroups() {
       group.overseer  ? `Overseer: ${h(group.overseer)}`   : '',
       group.assistant ? `Assistant: ${h(group.assistant)}` : '',
       group.phone     ? `Phone: ${h(group.phone)}`         : '',
+      isLocalGroup(group.id) ? 'Local group — not yet in the source database' : '',
     ].filter(Boolean).join(' · ');
 
     const rows = sortedFams.map(f => {
@@ -1216,6 +1406,62 @@ checkServerDB();
         </button>
       </div>
       <p id="modal-msg" class="text-xs mt-3"></p>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── Local group modal (create / edit) ────────────────────────────────── -->
+<div id="group-modal"
+     class="fixed inset-0 z-40 items-center justify-center bg-black/40 backdrop-blur-sm"
+     style="display:none">
+  <!-- Backdrop -->
+  <div class="absolute inset-0" onclick="closeGroupModal()"></div>
+  <!-- Panel -->
+  <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 z-10 flex flex-col max-h-[90vh]">
+
+    <div class="flex items-center justify-between px-6 pt-6 pb-4 shrink-0">
+      <h2 id="group-modal-title" class="text-lg font-bold text-slate-800">New Local Group</h2>
+      <button onclick="closeGroupModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+    </div>
+
+    <div class="overflow-y-auto px-6 pb-2 space-y-4">
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5" for="group-name-input">Group name</label>
+        <input id="group-name-input" type="text" placeholder="e.g. Group 11" autocomplete="off"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+               onkeydown="if(event.key==='Enter') saveGroupModal()">
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5" for="group-overseer-select">Overseer</label>
+        <select id="group-overseer-select"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-indigo-400">
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5" for="group-phone-input">Phone <span class="normal-case font-normal text-slate-400">(optional)</span></label>
+        <input id="group-phone-input" type="tel" placeholder="555-123-4567" autocomplete="off"
+               class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+               onkeydown="if(event.key==='Enter') saveGroupModal()">
+      </div>
+      <p class="text-[11px] text-slate-400 leading-snug bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        A local group lives only in this copy of the database, so families can be arranged
+        into it before it exists upstream. Add it to the source system to make it permanent —
+        downloading a fresh database from the source replaces local groups and returns their
+        families to <span class="font-medium">Unassigned</span>.
+      </p>
+      <p id="group-modal-error" class="hidden text-xs text-red-600"></p>
+    </div>
+
+    <div class="border-t border-slate-200 px-6 py-4 shrink-0 flex gap-2 justify-end">
+      <button onclick="closeGroupModal()"
+              class="text-slate-500 hover:text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition">
+        Cancel
+      </button>
+      <button onclick="saveGroupModal()"
+              class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-5 py-2 rounded-lg transition">
+        Save
+      </button>
     </div>
 
   </div>
