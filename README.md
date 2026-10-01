@@ -16,6 +16,7 @@ The `congregation.db` SQLite database used by this application can be exported f
   - Special Pioneers, Regular Pioneers
   - Active, Inactive, Associated
 - **Congregation-wide summary bar** — totals across all groups update in real time
+- **Merge on import** — keep the group arrangement built here while taking new and departed publishers from the source, or overwrite it outright
 - **Local groups** — create a field service group that does not exist in the source database yet (with its own overseer and assistant), so an arrangement can be planned before it is made official
 - **Delete any group** — in this copy of the database only; a re-import restores anything that came from the source
 - **Drag & drop** — move families between field service groups; all stats update instantly, and the group is written to both the family and its members
@@ -74,7 +75,9 @@ Then open [http://localhost:3000](http://localhost:3000).
 ## Usage
 
 1. On startup, if `congregation.db` is present on the server it loads automatically.
-2. Otherwise, click **Upload Database** or drag a `.db` file onto the landing zone.
+2. Otherwise, click **Populate Database** or drag a `.db` file onto the landing zone.
+   Leave **Merge** ticked to keep the arrangement already built here; untick it to
+   let the imported file replace everything.
 3. The congregation's field service groups load as cards in a responsive grid.
 4. Each card shows the group name, overseer, assistant (editable), statistics, and assigned families.
 5. **Drag a family card** from one group and **drop it** onto another group to reassign it — stats update immediately.
@@ -118,15 +121,35 @@ families with no active members — are unassigned too rather than left pointing
 a group that no longer exists. Deleting an imported group is a planning move
 rather than a loss: populating the database from the source again brings it back.
 
-### The imported database wins
+### Merge or overwrite
 
-Populating the database — by file, by drag and drop, or from a URL — replaces
-this copy outright and is authoritative. Local groups do not survive it, family
-moves and assistant changes made here do not survive it, and nothing is merged.
-When an import replaces local groups, the app says so in a banner naming them.
+The Populate Database screen has a **Merge — keep the current group arrangement**
+checkbox, **ticked by default**, which governs every way of populating: file,
+drag and drop, and URL.
 
-So once an arrangement is settled, add the group to the source system to make it
-permanent; anything left only in this copy is provisional by design.
+**Merge** treats the imported database as the truth about *who is in the
+congregation*, and this copy as the truth about *which group they are in*:
+
+- families and people who have moved since are dropped from the counts
+- families and people who are new are added
+- for anyone in both databases, the group they are in **here** is kept — the
+  arrangement being worked on is not overwritten
+- families and persons are handled separately, because the source data does
+  allow a person to be in a different group from their family
+- local groups are carried across, so families arranged into them stay put
+- a local group whose name now matches a real group in the source is **folded
+  into it**: the placeholder goes away and its families join the real group.
+  This is the end of a local group's life — it existed only until the source
+  caught up
+- a local assignment to a group the source has since deleted falls back to
+  whatever the import says
+
+**Overwrite** (unticked) is the older behaviour: the imported database replaces
+this copy outright and is authoritative. Local groups do not survive it, and
+neither do family moves or assistant changes made here.
+
+Either way the result is saved to the server, so it is what loads next startup,
+and a banner summarises what happened.
 
 ## Database Schema
 

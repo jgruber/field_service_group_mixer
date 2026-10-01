@@ -127,6 +127,22 @@
       </div>
     </div>
 
+    <!-- Merge / overwrite choice (governs every way of populating below) -->
+    <div class="bg-white rounded-2xl border border-slate-200 p-4 max-w-md w-full shadow-sm">
+      <label class="flex items-start gap-3 cursor-pointer select-none">
+        <input type="checkbox" id="merge-checkbox" checked
+               class="mt-0.5 w-4 h-4 accent-indigo-600 shrink-0" />
+        <span class="min-w-0">
+          <span class="block text-sm font-semibold text-slate-700">Merge — keep the current group arrangement</span>
+          <span class="block text-xs text-slate-400 leading-snug mt-1">
+            Families and people who have moved are dropped and new ones are added, but anyone
+            in both databases stays in the group they are in here, and local groups are kept.
+            Uncheck to let the imported database replace the arrangement outright.
+          </span>
+        </span>
+      </label>
+    </div>
+
     <!-- File drop zone -->
     <div id="file-drop-zone"
          class="bg-white rounded-2xl border-2 border-dashed border-slate-300 p-14 text-center max-w-md w-full shadow-sm transition-colors">
@@ -177,11 +193,11 @@
   <div id="groups-view" class="hidden space-y-5">
 
     <!-- Import notice (shown when an import replaced local groups) -->
-    <div id="import-notice" class="hidden bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex items-start gap-3">
-      <span class="text-amber-500 text-lg leading-none shrink-0">⚠️</span>
-      <p id="import-notice-text" class="text-amber-800 text-xs leading-relaxed flex-1"></p>
+    <div id="import-notice" class="hidden">
+      <span id="import-notice-icon" class="text-lg leading-none shrink-0"></span>
+      <p id="import-notice-text" class="text-xs leading-relaxed flex-1"></p>
       <button onclick="dismissImportNotice()"
-              class="text-amber-400 hover:text-amber-700 text-lg leading-none shrink-0" title="Dismiss">✕</button>
+              class="text-slate-400 hover:text-slate-700 text-lg leading-none shrink-0" title="Dismiss">✕</button>
     </div>
 
     <!-- Congregation-wide summary bar -->
@@ -303,8 +319,7 @@ async function loadFile(file) {
   try {
     await ensureSQL();
     const buf = await file.arrayBuffer();
-    await saveToServer(buf.slice(0));
-    await loadBuffer(buf);
+    await loadBuffer(buf, true);
   } catch (err) {
     console.error(err);
     alert('Failed to load database:\n' + err.message);
@@ -312,32 +327,88 @@ async function loadFile(file) {
   }
 }
 
-async function loadBuffer(buf) {
+// fromImport is false only for the copy already sitting on the server at
+// startup — there is nothing to merge into, and nothing to save back.
+async function loadBuffer(buf, fromImport = false) {
   await ensureSQL();
-  // The imported database is authoritative: it replaces this copy outright,
-  // local groups included. Note what is about to be lost so it can be reported.
-  const replacedLocal = state.groups.filter(g => isLocalGroup(g.id)).map(g => g.name);
+  const incoming = new SQL.Database(new Uint8Array(buf));
+
+  // Merging keeps the arrangement built here; overwriting lets the imported
+  // database replace it outright, local groups included.
+  const merging       = fromImport && state.db && mergeRequested();
+  const replacedLocal = merging ? [] : state.groups.filter(g => isLocalGroup(g.id)).map(g => g.name);
+  const stats         = merging ? mergeArrangement(state.db, incoming) : null;
+
   if (state.db) state.db.close();
-  state.db = new SQL.Database(new Uint8Array(buf));
+  state.db = incoming;
   buildState();
   renderAll();
-  showImportNotice(replacedLocal);
+
+  // Save what we actually ended up holding — the merged database, not the file
+  // that arrived — so the server serves it on the next startup.
+  if (fromImport) await saveToServer(state.db.export());
+
+  if (stats) showMergeNotice(stats);
+  else       showImportNotice(replacedLocal);
   setLoading(false);
 }
 
-function showImportNotice(replacedLocal) {
+function showNotice(kind, html) {
   const el = document.getElementById('import-notice');
-  if (!replacedLocal.length) { el.classList.add('hidden'); return; }
+  el.className = 'rounded-xl px-4 py-3 flex items-start gap-3 border ' +
+    (kind === 'warn' ? 'bg-amber-50 border-amber-200' : 'bg-indigo-50 border-indigo-200');
+  document.getElementById('import-notice-icon').textContent = kind === 'warn' ? '⚠️' : '✅';
+  document.getElementById('import-notice-text').className =
+    'text-xs leading-relaxed flex-1 ' + (kind === 'warn' ? 'text-amber-800' : 'text-indigo-900');
+  document.getElementById('import-notice-text').innerHTML = html;
+}
+
+function showImportNotice(replacedLocal) {
+  if (!replacedLocal.length) { dismissImportNotice(); return; }
   const n = replacedLocal.length;
-  document.getElementById('import-notice-text').innerHTML =
+  showNotice('warn',
     `The imported database is now in use and replaced ${n} local group${n === 1 ? '' : 's'} ` +
     `(${replacedLocal.map(h).join(', ')}). Families that were arranged into ` +
-    `${n === 1 ? 'it' : 'them'} follow the imported database again.`;
-  el.classList.remove('hidden');
+    `${n === 1 ? 'it' : 'them'} follow the imported database again.`);
+}
+
+function showMergeNotice(st) {
+  const bits = [];
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  if (st.familiesKept || st.personsKept) {
+    const kept = [];
+    if (st.familiesKept) kept.push(plural(st.familiesKept, 'family', 'families'));
+    if (st.personsKept)  kept.push(plural(st.personsKept,  'person', 'people'));
+    bits.push(`kept the group assignment for ${kept.join(' and ')}`);
+  }
+  if (st.newFamilies || st.newPersons) {
+    const added = [];
+    if (st.newFamilies) added.push(plural(st.newFamilies, 'family', 'families'));
+    if (st.newPersons)  added.push(plural(st.newPersons,  'person', 'people'));
+    bits.push(`added ${added.join(' and ')}`);
+  }
+  if (st.goneFamilies || st.gonePersons) {
+    const gone = [];
+    if (st.goneFamilies) gone.push(plural(st.goneFamilies, 'family', 'families'));
+    if (st.gonePersons)  gone.push(plural(st.gonePersons,  'person', 'people'));
+    bits.push(`dropped ${gone.join(' and ')} who have moved`);
+  }
+  if (st.groupsCarried.length) {
+    bits.push(`carried over ${plural(st.groupsCarried.length, 'local group', 'local groups')} ` +
+              `(${st.groupsCarried.map(h).join(', ')})`);
+  }
+  if (st.groupsFolded.length) {
+    bits.push(`folded ${st.groupsFolded.map(h).join(', ')} into the matching group now in the source`);
+  }
+  showNotice('info',
+    bits.length
+      ? `<span class="font-semibold">Merged.</span> The import ${bits.join('; ')}.`
+      : `<span class="font-semibold">Merged.</span> Nothing in the arrangement needed changing.`);
 }
 
 function dismissImportNotice() {
-  document.getElementById('import-notice').classList.add('hidden');
+  const el = document.getElementById('import-notice');
+  el.className = 'hidden';
 }
 
 // ─── Build in-memory state from DB ────────────────────────────────────────
@@ -417,6 +488,113 @@ function buildState() {
       state.groupFamilies[assignedId].push(id);
     }
   }
+}
+
+// ─── Merging an import into the current arrangement ───────────────────────
+// Overwriting takes the imported database wholesale. Merging takes it as the
+// truth about *who is in the congregation* — people and families that have
+// moved are dropped, new ones are added, every other field comes across — but
+// keeps the group each family and person is in here. That is the arrangement
+// the secretary has been building, and it is the one thing the source does not
+// know about yet.
+
+function mergeRequested() {
+  return document.getElementById('merge-checkbox')?.checked ?? false;
+}
+
+function rowsOf(db, sql) {
+  const r = db.exec(sql);
+  return r.length ? r[0].values : [];
+}
+
+function mergeArrangement(localDb, incoming) {
+  const st = {
+    familiesKept: 0, personsKept: 0,
+    newFamilies: 0, newPersons: 0,
+    goneFamilies: 0, gonePersons: 0,
+    groupsCarried: [], groupsFolded: [],
+  };
+
+  // --- groups ------------------------------------------------------------
+  const incGroups = rowsOf(incoming, 'SELECT id, name FROM field_service_groups');
+  const groupName = new Map(incGroups.map(([id, name]) => [id, name]));
+  const byName    = new Map(incGroups.map(([id, name]) => [String(name ?? '').toLowerCase(), id]));
+  const personExists = new Set(rowsOf(incoming, 'SELECT id FROM persons').map(([id]) => id));
+
+  // A local group is a placeholder for one the source does not have yet. If the
+  // source now has a group of the same name, the placeholder has served its
+  // purpose: fold its families into the real group rather than keeping both.
+  const remap = new Map();
+  for (const [id, cid, name, ov, ovId, as, asId, phone] of rowsOf(localDb,
+        `SELECT id, congregation_id, name, overseer, overseer_id, assistant, assistant_id, phone
+           FROM field_service_groups WHERE id < 0`)) {
+    const match = byName.get(String(name ?? '').toLowerCase());
+    if (match !== undefined) {
+      remap.set(id, match);
+      st.groupsFolded.push(name);
+      continue;
+    }
+    // An overseer or assistant who is no longer in the database cannot be kept.
+    const ovKeep = personExists.has(ovId) ? ovId : null;
+    const asKeep = personExists.has(asId) ? asId : null;
+    incoming.run(
+      `INSERT INTO field_service_groups
+         (id, congregation_id, name, overseer, overseer_id, assistant, assistant_id, phone)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, cid, name, ovKeep ? ov : null, ovKeep, asKeep ? as : null, asKeep, phone]
+    );
+    groupName.set(id, name);
+    remap.set(id, id);
+    st.groupsCarried.push(name);
+  }
+
+  // Where a local assignment should land in the merged database, or undefined
+  // when that group is gone from the source and was not carried across.
+  const target = localGid => {
+    if (localGid === null || localGid === undefined) return null;
+    const mapped = remap.has(localGid) ? remap.get(localGid) : localGid;
+    return groupName.has(mapped) ? mapped : undefined;
+  };
+
+  // --- families and persons ----------------------------------------------
+  // Each table is handled the same way, but separately: in the source data a
+  // person may sit in a different group from their family, so neither is
+  // derived from the other.
+  for (const [table, key] of [['families', 'familiesKept'], ['persons', 'personsKept']]) {
+    const localRows = rowsOf(localDb,
+      `SELECT id, field_service_group_id, moved FROM ${table}`);
+    const incRows = new Map(rowsOf(incoming,
+      `SELECT id, field_service_group_id, moved FROM ${table}`).map(([id, gid, moved]) => [id, { gid, moved }]));
+
+    const localIds = new Set();
+    for (const [id, localGid, localMoved] of localRows) {
+      localIds.add(id);
+      const inc = incRows.get(id);
+      if (!inc) {                                   // gone from the source entirely
+        if (!localMoved) st[table === 'families' ? 'goneFamilies' : 'gonePersons']++;
+        continue;
+      }
+      if (!localMoved && inc.moved) {               // has moved since
+        st[table === 'families' ? 'goneFamilies' : 'gonePersons']++;
+        continue;                                   // let the import unassign them
+      }
+      const gid = target(localGid);
+      if (gid === undefined) continue;              // local group no longer exists
+      if ((gid ?? null) === (inc.gid ?? null)) continue;  // already agrees
+      incoming.run(
+        `UPDATE ${table} SET field_service_group_id = ?, field_service_group_name = ? WHERE id = ?`,
+        [gid, gid === null ? null : (groupName.get(gid) ?? null), id]
+      );
+      st[key]++;
+    }
+    for (const id of incRows.keys()) {
+      if (!localIds.has(id) && !incRows.get(id).moved) {
+        st[table === 'families' ? 'newFamilies' : 'newPersons']++;
+      }
+    }
+  }
+
+  return st;
 }
 
 // ─── Stats helpers ─────────────────────────────────────────────────────────
@@ -885,10 +1063,7 @@ async function fetchRemoteDB() {
     const res = await fetch(fetchUrl, { headers });
     if (!res.ok) throw new Error(`Server returned ${res.status} ${res.statusText}`);
     const buf = await res.arrayBuffer();
-    // Save before loading, the same as an uploaded file: what was just imported
-    // is authoritative, so it has to be what the server serves on next startup.
-    await saveToServer(buf.slice(0));
-    await loadBuffer(buf);
+    await loadBuffer(buf, true);
   } catch (e) {
     errEl.textContent = e.message || 'Failed to download database.';
     errEl.classList.remove('hidden');
