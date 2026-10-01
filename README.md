@@ -16,6 +16,12 @@ The `congregation.db` SQLite database used by this application can be exported f
   - Special Pioneers, Regular Pioneers
   - Active, Inactive, Associated
 - **Congregation-wide summary bar** — totals across all groups update in real time
+- **Group Balance chart** — the same grouped horizontal bars the
+  [congregation-directory](https://github.com/jgruber/congregation-directory) uses for
+  service group distribution, pinned above the groups and redrawn on every move, so the
+  balance of elders, ministerial servants, pioneers, active and inactive publishers across
+  the groups is visible while families are being rearranged. Collapsible; the choice is
+  remembered
 - **Merge on import** — keep the group arrangement built here while taking new and departed publishers from the source, or overwrite it outright
 - **Local groups** — create a field service group that does not exist in the source database yet (with its own overseer and assistant), so an arrangement can be planned before it is made official
 - **Delete any group** — in this copy of the database only; a re-import restores anything that came from the source
@@ -173,6 +179,7 @@ name the group they came from.
 ## Tech Stack
 
 - [Tailwind CSS](https://tailwindcss.com/) — utility-first styling (CDN)
+- [Chart.js](https://www.chartjs.org/) — the Group Balance chart (CDN)
 - [sql.js](https://sql.js.org/) — SQLite compiled to WebAssembly (CDN)
 - [Flask](https://flask.palletsprojects.com/) — lightweight Python server for auto-load and file management
 - [python:3.12-alpine](https://hub.docker.com/_/python) — Docker container base image

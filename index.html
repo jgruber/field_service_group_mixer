@@ -14,6 +14,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/sql.js@1.10.2/dist/sql-wasm.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js" crossorigin="anonymous"></script>
   <style>
     .family-card.dragging    { opacity: 0.35; transform: rotate(1.5deg) scale(0.97); }
     .drop-zone.drag-over     { outline: 2px dashed #818cf8; background-color: #eef2ff !important; }
@@ -203,6 +204,25 @@
     <!-- Congregation-wide summary bar -->
     <div id="summary-bar" class="bg-white rounded-xl shadow-sm p-3 grid gap-2"
          style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr))"></div>
+
+    <!-- Group balance (same visual as the congregation directory) -->
+    <div id="balance-card" class="bg-white rounded-xl shadow-sm">
+      <button onclick="toggleBalance()"
+              class="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-left group">
+        <span class="min-w-0">
+          <span class="block text-sm font-semibold text-slate-700">Group Balance</span>
+          <span class="block text-[11px] text-slate-400 leading-tight">Elders, servants and pioneers across the groups — updates as you move families</span>
+        </span>
+        <svg id="balance-chevron" xmlns="http://www.w3.org/2000/svg"
+             class="w-4 h-4 text-slate-400 group-hover:text-slate-600 shrink-0 transition-transform"
+             fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/>
+        </svg>
+      </button>
+      <div id="balance-body" class="px-4 pb-4">
+        <div id="balance-wrap" class="relative"><canvas id="balance-chart"></canvas></div>
+      </div>
+    </div>
 
     <!-- Drag hint -->
     <p class="text-xs text-slate-400 text-center">
@@ -600,12 +620,13 @@ function mergeArrangement(localDb, incoming) {
 // ─── Stats helpers ─────────────────────────────────────────────────────────
 function familyStats(familyId) {
   const persons = state.families[familyId]?.persons ?? [];
-  const s = { total: persons.length, elders: 0, ms: 0, sp: 0, pioneers: 0, active: 0, inactive: 0, associated: 0 };
+  const s = { total: persons.length, elders: 0, ms: 0, sp: 0, pioneers: 0, pioneersAny: 0, active: 0, inactive: 0, associated: 0 };
   for (const p of persons) {
     if (p.elder)                          s.elders++;
     if (p.ms)                             s.ms++;
     if (p.sp)                             s.sp++;
     if (p.pioneer)                        s.pioneers++;
+    if (p.sp || p.pioneer)                s.pioneersAny++; // one bar for pioneers of either kind
     if (p.category === 'associated')      s.associated++;
     else if (!p.inactive)                 s.active++;
     else                                  s.inactive++;
@@ -614,7 +635,7 @@ function familyStats(familyId) {
 }
 
 function groupStats(groupId) {
-  const s = { families: 0, persons: 0, elders: 0, ms: 0, sp: 0, pioneers: 0, active: 0, inactive: 0, associated: 0 };
+  const s = { families: 0, persons: 0, elders: 0, ms: 0, sp: 0, pioneers: 0, pioneersAny: 0, active: 0, inactive: 0, associated: 0 };
   for (const fid of state.groupFamilies[groupId] ?? []) {
     const fs = familyStats(fid);
     s.families++;
@@ -623,6 +644,7 @@ function groupStats(groupId) {
     s.ms         += fs.ms;
     s.sp         += fs.sp;
     s.pioneers   += fs.pioneers;
+    s.pioneersAny+= fs.pioneersAny;
     s.active     += fs.active;
     s.inactive   += fs.inactive;
     s.associated += fs.associated;
@@ -852,6 +874,87 @@ function sortGroups() {
   state.groups.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// ─── Group balance chart ───────────────────────────────────────────────────
+// The same grouped horizontal bars the congregation directory uses for service
+// group distribution, but fed from the working copy here so it answers the
+// question being asked while dragging: is this mix still balanced?
+
+const BALANCE_SERIES = [
+  { label: 'Elders',        key: 'elders',      color: '#8b5cf6' },
+  { label: 'Min. Servants', key: 'ms',          color: '#3b82f6' },
+  { label: 'Pioneers',      key: 'pioneersAny', color: '#10b981' },
+  { label: 'Active',        key: 'active',      color: '#f59e0b' },
+  { label: 'Inactive',      key: 'inactive',    color: '#ef4444' },
+];
+
+let _balanceChart = null;
+
+function balanceCollapsed() {
+  try { return localStorage.getItem('fsg-balance-collapsed') === '1'; } catch { return false; }
+}
+
+function applyBalanceCollapsed() {
+  const collapsed = balanceCollapsed();
+  document.getElementById('balance-body').classList.toggle('hidden', collapsed);
+  document.getElementById('balance-chevron').style.transform = collapsed ? 'rotate(-90deg)' : '';
+}
+
+function toggleBalance() {
+  const collapsing = !balanceCollapsed();
+  try { localStorage.setItem('fsg-balance-collapsed', collapsing ? '1' : '0'); } catch { /* private mode */ }
+  applyBalanceCollapsed();
+  if (!collapsing) renderBalanceChart();
+}
+
+function renderBalanceChart() {
+  const card = document.getElementById('balance-card');
+  // Chart.js comes from a CDN; without it the rest of the page still works.
+  if (typeof Chart === 'undefined') { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  applyBalanceCollapsed();
+  if (balanceCollapsed()) return;
+
+  // Same order as the cards below, with Unassigned last.
+  const ids    = [...state.groups.map(g => g.id), UNASSIGNED_ID];
+  const labels = [...state.groups.map(g => g.name || '(Unnamed)'), 'Unassigned'];
+  const stats  = ids.map(id => groupStats(id));
+
+  document.getElementById('balance-wrap').style.height =
+    Math.max(200, labels.length * 44) + 'px';
+
+  const datasets = BALANCE_SERIES.map(sr => ({
+    label: sr.label,
+    data: stats.map(gs => gs[sr.key]),
+    backgroundColor: sr.color,
+    borderRadius: 2,
+  }));
+
+  if (_balanceChart) {
+    _balanceChart.data.labels   = labels;
+    _balanceChart.data.datasets = datasets;
+    _balanceChart.update('none');   // no animation: this redraws on every drop
+    return;
+  }
+
+  _balanceChart = new Chart(document.getElementById('balance-chart').getContext('2d'), {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend:  { position: 'bottom', labels: { color: '#64748b', font: { size: 10 }, boxWidth: 10, padding: 8 } },
+        tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.raw}` } },
+      },
+      scales: {
+        x: { beginAtZero: true, ticks: { color: '#94a3b8', font: { size: 10 }, stepSize: 1 }, grid: { color: '#e2e8f0' } },
+        y: { ticks: { color: '#475569', font: { size: 11 } }, grid: { color: '#e2e8f0' } },
+      },
+    },
+  });
+}
+
 // ─── Assistant editing ─────────────────────────────────────────────────────
 const editingAssistant = new Set(); // groupIds with assistant dropdown open
 
@@ -990,6 +1093,7 @@ function moveFamily(familyId, fromGroupId, toGroupId) {
   rerenderGroup(fromGroupId);
   rerenderGroup(toGroupId);
   renderSummaryBar();
+  renderBalanceChart();
 }
 
 async function persistDB() {
@@ -1390,6 +1494,7 @@ function renderAll() {
   nameEl.classList.remove('hidden');
 
   renderSummaryBar();
+  renderBalanceChart();
   document.getElementById('groups-container').innerHTML =
     state.groups.map(g => groupCardHTML(g)).join('') + unassignedCardHTML();
 }
