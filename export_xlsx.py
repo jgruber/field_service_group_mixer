@@ -125,15 +125,34 @@ def format_when(day, time):
     return ' '.join(x for x in [day, format_time(time)] if x)
 
 
+STATE_ZIP = re.compile(r'^[A-Za-z]{2}\.?\s+\d{5}(?:-\d{4})?$')
+ZIP_ONLY  = re.compile(r'^\d{5}(?:-\d{4})?$')
+
+
 def format_location(location, addresses):
-    """A location over as many lines as it naturally has."""
+    """A location over as many lines as it naturally has.
+
+    An address that names a household in the database is split the way the
+    database holds it. Anything else is split on its commas — except that a
+    trailing "TX 75025" rejoins the city before it, so a typed address still
+    reads as street / city, state zip rather than breaking after the city.
+    """
     text = (location or '').strip()
     if not text:
         return []
     known = addresses.get(text.lower())
     if known:
         return [line for line in known if line]
-    return [part.strip() for part in text.split(',') if part.strip()]
+
+    lines = []
+    for part in (p.strip() for p in text.split(',')):
+        if not part:
+            continue
+        if lines and (STATE_ZIP.match(part) or ZIP_ONLY.match(part)):
+            lines[-1] = '%s, %s' % (lines[-1], part)
+        else:
+            lines.append(part)
+    return lines
 
 
 def format_family(fam):
