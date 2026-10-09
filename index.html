@@ -496,6 +496,7 @@ function buildState() {
   if (gRes.length) {
     for (const [id, name, overseer, overseer_id, assistant, assistant_id, phone] of gRes[0].values) {
       const m = meetings[id] ?? {};
+      m.location = normalizeAddress(m.location || '');
       state.groups.push({ id, name: name || '', overseer: overseer || '', overseer_id: overseer_id || null, assistant: assistant || null, assistant_id: assistant_id || null, phone: phone || '',
         meetDay: m.day || '', meetTime: m.time || '', meetLocation: m.location || '' });
       state.groupFamilies[id] = [];
@@ -771,7 +772,8 @@ function ensureMeetingTable(db) {
 
 function readCongMeetings(db) {
   return rowsOf(db, 'SELECT day, time, location FROM congregation_meetings ORDER BY position')
-    .map(([day, time, location]) => ({ day: day || '', time: time || '', location: location || '' }));
+    .map(([day, time, location]) => ({ day: day || '', time: time || '',
+                                       location: normalizeAddress(location || '') }));
 }
 
 // The list is short and always edited as a whole, so it is rewritten outright
@@ -784,11 +786,26 @@ function writeCongMeetings(db, list) {
   ));
 }
 
+// A typed address is written the way the congregation database writes them:
+// no comma between the street and the city, the comma only before the state
+// and ZIP. Anything that is not an address (a hall, a car park) is left alone.
+const STATE_ZIP_RE = /^[A-Za-z]{2}\.?\s+\d{5}(?:-\d{4})?$/;
+const ZIP_RE       = /^\d{5}(?:-\d{4})?$/;
+
+function normalizeAddress(text) {
+  const parts = String(text ?? '').split(',').map(x => x.trim()).filter(Boolean);
+  if (parts.length < 2) return String(text ?? '').trim();
+  const last = parts[parts.length - 1];
+  if (!STATE_ZIP_RE.test(last) && !ZIP_RE.test(last)) return parts.join(', ');
+  return parts.slice(0, -1).join(' ') + ', ' + last;
+}
+
 const MEETING_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 function saveMeeting(groupId, { day, time, location }) {
   const group = state.groups.find(g => g.id === groupId);
   if (!group) return;
+  location = normalizeAddress(location);
   if (!day && !time && !location) {
     state.db.run('DELETE FROM fsg_meetings WHERE group_id = ?', [groupId]);
   } else {
@@ -871,7 +888,9 @@ function congRemove(i) {
 
 function saveCongMeetings() {
   // A row with nothing filled in is not a meeting.
-  state.congMeetings = _congDraft.filter(m => m.day || m.time || m.location);
+  state.congMeetings = _congDraft
+    .map(m => ({ ...m, location: normalizeAddress(m.location) }))
+    .filter(m => m.day || m.time || m.location);
   writeCongMeetings(state.db, state.congMeetings);
   persistDB();
   closeCongMeetingsModal();

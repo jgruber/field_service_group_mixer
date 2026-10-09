@@ -129,6 +129,16 @@ STATE_ZIP = re.compile(r'^[A-Za-z]{2}\.?\s+\d{5}(?:-\d{4})?$')
 ZIP_ONLY  = re.compile(r'^\d{5}(?:-\d{4})?$')
 
 
+def normalize_address(text):
+    """The same spelling rule the page applies: no comma after the street."""
+    parts = [p.strip() for p in str(text or '').split(',') if p.strip()]
+    if len(parts) < 2:
+        return str(text or '').strip()
+    if not (STATE_ZIP.match(parts[-1]) or ZIP_ONLY.match(parts[-1])):
+        return ', '.join(parts)
+    return '%s, %s' % (' '.join(parts[:-1]), parts[-1])
+
+
 def format_location(location, addresses):
     """A location over as many lines as it naturally has.
 
@@ -140,7 +150,9 @@ def format_location(location, addresses):
     text = (location or '').strip()
     if not text:
         return []
-    known = addresses.get(text.lower())
+    # A typed address may carry a comma the database does not use; try both
+    # spellings before falling back to splitting the text as written.
+    known = addresses.get(text.lower()) or addresses.get(normalize_address(text).lower())
     if known:
         return [line for line in known if line]
 
