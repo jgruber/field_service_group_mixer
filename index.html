@@ -83,6 +83,14 @@
         </svg>
         New Group
       </button>
+      <button id="export-btn"
+              class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
+              onclick="exportXlsx()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4 4h16v16H4zM4 10h16M10 10v10M4 16h16"/>
+        </svg>
+        Excel
+      </button>
       <button id="print-btn"
               class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
               onclick="printGroups()">
@@ -1398,7 +1406,7 @@ function showGroupsView() {
 
 // Header buttons that only make sense while the groups grid is on screen
 function setGroupToolsVisible(on) {
-  for (const id of ['print-btn', 'new-group-btn', 'cong-meetings-btn']) {
+  for (const id of ['print-btn', 'export-btn', 'new-group-btn', 'cong-meetings-btn']) {
     const el = document.getElementById(id);
     el.classList.toggle('hidden', !on);
     el.classList.toggle('flex',   on);
@@ -1969,6 +1977,35 @@ function showModalMsg(msg, isError = false) {
   const el = document.getElementById('modal-msg');
   el.textContent = msg;
   el.className = `text-xs mt-3 ${isError ? 'text-red-600' : 'text-green-600'}`;
+}
+
+// ─── Excel export ──────────────────────────────────────────────────────────
+// Built on the server, from the saved database — so the page saves what it is
+// holding first, and what comes back matches what is on screen.
+
+async function exportXlsx() {
+  if (!state.db) { alert('Load a database first.'); return; }
+  setLoading(true);
+  try {
+    await persistDB();
+    const res = await fetch('/export/xlsx');
+    if (!res.ok) {
+      const msg = await res.json().catch(() => ({}));
+      throw new Error(msg.error || `Server returned ${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const name = /filename="?([^"]+)"?/.exec(res.headers.get('content-disposition') || '')?.[1]
+              || 'field_service_groups.xlsx';
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Could not build the spreadsheet:\n' + (e.message || e) +
+          '\n\nThe Excel export needs the Flask server; it is not available on a static file server.');
+  } finally {
+    setLoading(false);
+  }
 }
 
 // ─── Print ─────────────────────────────────────────────────────────────────

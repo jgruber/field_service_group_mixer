@@ -1,7 +1,11 @@
+import io
 import os
 import json
+from datetime import datetime
 from functools import wraps
 from flask import Flask, send_file, request, abort, Response, jsonify, send_from_directory
+
+from export_xlsx import build_workbook
 
 app = Flask(__name__)
 
@@ -89,6 +93,29 @@ def delete_db():
         os.remove(DB_PATH)
         return '', 204
     abort(404)
+
+# ─── Printable export ──────────────────────────────────────────────────────
+
+@app.route('/export/xlsx', methods=['GET'])
+@_auth_required
+def export_xlsx():
+    """The groups and the week as a spreadsheet, built from the saved database.
+
+    The page saves every change before asking for this, so what is on screen is
+    what gets exported.
+    """
+    if not os.path.exists(DB_PATH):
+        return jsonify({'error': 'No database on the server to export.'}), 404
+    stream = io.BytesIO()
+    build_workbook(DB_PATH).save(stream)
+    stream.seek(0)
+    name = 'field_service_groups_%s.xlsx' % datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    return send_file(
+        stream,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=name,
+    )
 
 # ─── User management ───────────────────────────────────────────────────────
 

@@ -92,6 +92,25 @@ Then open [http://localhost:3000](http://localhost:3000).
 8. Click **New Group** in the header to create a *local* group — see [Local Groups](#local-groups) below.
 9. To delete the server-side database or upload a new one, click **Populate Database** in the header.
 
+## Excel Export
+
+The **Excel** button in the header downloads an `.xlsx` for printing elsewhere.
+The page saves what it is holding first, so the file matches what is on screen.
+
+**Field Service Groups** — the groups three across, as many rows as it takes.
+Each block gives the group name, the overseer and the assistant on the next
+line, a blank line, when the group meets, the location over as many lines as it
+has, then the families: last name with the family head's first name in
+parentheses, as in `Gruber (John)`. Family lists line up across each band of
+three. Unassigned families appear as a final block when there are any.
+
+**Meetings for Field Service** — a week, Sunday first, with every meeting on its
+day in time order: the congregation's own alongside each group's, each with its
+location beneath. Anything with no day set is listed under the week.
+
+Needs the Flask server (it is built with `openpyxl` server-side); on a static
+file server the button reports that and does nothing.
+
 ## Field Service Meetings
 
 Two separate things, both stored only in this copy of the database — the source
@@ -203,5 +222,6 @@ name the group they came from.
 - [Chart.js](https://www.chartjs.org/) — the Group Balance chart (CDN)
 - [sql.js](https://sql.js.org/) — SQLite compiled to WebAssembly (CDN)
 - [Flask](https://flask.palletsprojects.com/) — lightweight Python server for auto-load and file management
+- [openpyxl](https://openpyxl.readthedocs.io/) — builds the Excel export
 - [python:3.12-alpine](https://hub.docker.com/_/python) — Docker container base image
 - Vanilla JavaScript, HTML5 Drag and Drop API — no framework dependencies
