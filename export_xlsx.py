@@ -100,13 +100,18 @@ def read_model(db_path):
                                                        (r['postal_code'] or '').strip()] if y)] if x),
         ]
 
+    # The cities the congregation actually lives in, used to find where a
+    # typed street address ends.
+    cities = [r[0].strip() for r in cur.execute(
+        "SELECT DISTINCT city FROM persons WHERE city IS NOT NULL AND city <> ''") if r[0].strip()]
+
     name = 'Congregation'
     row = cur.execute('SELECT name FROM congregations LIMIT 1').fetchone()
     if row and row['name']:
         name = row['name']
 
     con.close()
-    return dict(congregation=name, groups=groups,
+    return dict(congregation=name, groups=groups, cities=cities,
                 congregation_meetings=congregation_meetings, addresses=addresses)
 
 
@@ -139,7 +144,7 @@ def normalize_address(text):
     return '%s, %s' % (' '.join(parts[:-1]), parts[-1])
 
 
-def format_location(location, addresses):
+def format_location(location, addresses, cities=()):
     """A location over as many lines as it naturally has.
 
     An address that names a household in the database is split the way the
@@ -157,14 +162,36 @@ def format_location(location, addresses):
         return [line for line in known if line]
 
     lines = []
-    for part in (p.strip() for p in text.split(',')):
+    for part in (p.strip() for p in normalize_address(text).split(',')):
         if not part:
             continue
         if lines and (STATE_ZIP.match(part) or ZIP_ONLY.match(part)):
             lines[-1] = '%s, %s' % (lines[-1], part)
         else:
             lines.append(part)
+
+    # "1912 Hedgcoxe Road Plano, TX 75025" is one line with no comma to split
+    # on, so find where the street ends by looking for a city the congregation
+    # actually lives in. Without that it stays on one line rather than guessing.
+    if len(lines) == 1 and ',' in lines[0]:
+        head, _, tail = lines[0].rpartition(',')
+        head, tail = head.strip(), tail.strip()
+        city = _trailing_city(head, cities)
+        if city:
+            street = head[:len(head) - len(city)].strip()
+            if street:
+                return [street, '%s, %s' % (city, tail)]
     return lines
+
+
+def _trailing_city(text, cities):
+    """The longest known city name that `text` ends with, if any."""
+    low = text.lower()
+    best = ''
+    for city in cities:
+        if city and low.endswith(' ' + city.lower()) and len(city) > len(best):
+            best = city
+    return best
 
 
 def format_family(fam):
@@ -173,7 +200,7 @@ def format_family(fam):
     return '%s (%s)' % (fam['name'], first) if first else fam['name']
 
 
-def group_block(group, addresses):
+def group_block(group, addresses, cities):
     """One group as two stacks of lines: who and when above, families below.
 
     They are kept apart so that a band of three groups can have its family
@@ -184,7 +211,7 @@ def group_block(group, addresses):
             (group['assistant'] or '—', 'person'),
             ('', 'blank'),
             (format_when(group['day'], group['time']) or 'Meeting not set', 'when')]
-    head += [(part, 'where') for part in format_location(group['location'], addresses)]
+    head += [(part, 'where') for part in format_location(group['location'], addresses, cities)]
 
     if group['families']:
         families = [(format_family(fam), 'family') for fam in group['families']]
@@ -218,7 +245,7 @@ def write_groups_sheet(ws, model):
 
     row = 3
     for start in range(0, len(model['groups']), COLUMNS):
-        blocks = [group_block(g, model['addresses']) for g in model['groups'][start:start + COLUMNS]]
+        blocks = [group_block(g, model['addresses'], model['cities']) for g in model['groups'][start:start + COLUMNS]]
         # Pad every header to the tallest in the band, then a blank line, so the
         # family lists below all begin on the same row.
         head_height = max(len(head) for head, _ in blocks) + 1
@@ -295,7 +322,7 @@ def write_week_sheet(ws, model):
         lines = []
         for time, label, location in week[day]:
             lines.append(('%s  %s' % (format_time(time), label) if time else label, 'when'))
-            for part in format_location(location, model['addresses']):
+            for part in format_location(location, model['addresses'], model['cities']):
                 lines.append((part, 'where'))
             lines.append(('', 'blank'))
         columns.append(lines[:-1] if lines else [])
@@ -320,7 +347,7 @@ def write_week_sheet(ws, model):
         ws.cell(row=row, column=1, value='No day set').font = Font(bold=True, size=11)
         row += 1
         for time, label, location in unscheduled:
-            where = ', '.join(format_location(location, model['addresses']))
+            where = ', '.join(format_location(location, model['addresses'], model['cities']))
             ws.cell(row=row, column=1,
                     value=' '.join(x for x in [format_time(time), label] if x)).font = TIME_FONT
             if where:
