@@ -98,15 +98,19 @@ The **Excel** button in the header downloads an `.xlsx` for printing elsewhere.
 The page saves what it is holding first, so the file matches what is on screen.
 
 **Field Service Groups** — the groups three across, as many rows as it takes.
-Each block gives the group name, the overseer and the assistant on the next
-line, a blank line, when the group meets, the location over as many lines as it
-has, then the families: last name with the family head's first name in
-parentheses, as in `Gruber (John)`. Family lists line up across each band of
-three. Unassigned families appear as a final block when there are any.
+Bands run straight on with no spacer rows; the structure is carried by rules
+instead. Each band is boxed in a medium border with medium lines between the
+columns, a thin rule under the group's name row and another under its meeting
+details, so each block reads as `<Name> Field Service Group` (shaded), then
+`Overseer:` and `Assistant:`, then when it meets and where, then the families —
+last name with the family head's first name in parentheses, as in
+`Gruber (John)`. Family lists line up across each band of three. Unassigned
+families appear as a final block when there are any.
 
 **Meetings for Field Service** — a week, Sunday first, with every meeting on its
 day in time order: the congregation's own alongside each group's, each with its
-location beneath. Anything with no day set is listed under the week.
+location beneath. Shaded day headings over a boxed grid, frozen below the
+headings. Anything with no day set is listed under the week.
 
 Needs the Flask server (it is built with `openpyxl` server-side); on a static
 file server the button reports that and does nothing.

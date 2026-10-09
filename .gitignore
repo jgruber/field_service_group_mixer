@@ -14,3 +14,6 @@ Thumbs.db
 .vscode/
 .idea/
 
+
+# Sample/exported workbooks
+field_service_groups_*.xlsx

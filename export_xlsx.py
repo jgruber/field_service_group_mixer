@@ -22,14 +22,30 @@ COLUMNS   = 3          # group blocks across the first sheet
 COL_WIDTH = 34
 DAYS      = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
-HEADER_FILL = PatternFill('solid', fgColor='4338CA')
-DAY_FILL    = PatternFill('solid', fgColor='EEF2FF')
-WHITE_BOLD  = Font(bold=True, color='FFFFFF', size=12)
+HEADER_FILL = PatternFill('solid', fgColor='FF4338CA')   # the title banner
+GROUP_FILL  = PatternFill('solid', fgColor='FFD9D9D9')   # the band's name row
+DAY_FILL    = PatternFill('solid', fgColor='FFEEF2FF')   # the weekday headings
+
+TITLE_FONT  = Font(bold=True, color='FFFFFF', size=12)
 GROUP_FONT  = Font(bold=True, size=11)
-LABEL_FONT  = Font(size=10)
-MUTED_FONT  = Font(size=9, color='666666')
-TIME_FONT   = Font(bold=True, size=10)
-THIN        = Side(style='thin', color='BFBFBF')
+DAY_FONT    = Font(bold=True, size=11)
+BODY_FONT   = Font(size=10)
+WHEN_FONT   = Font(bold=True, size=10)
+WHERE_FONT  = Font(size=9, color='666666')
+
+MEDIUM = Side(style='medium')
+THIN   = Side(style='thin')
+TOP    = Alignment(vertical='top', wrap_text=True)
+
+FONTS = {'group': GROUP_FONT, 'person': BODY_FONT, 'when': WHEN_FONT,
+         'where': WHERE_FONT, 'family': BODY_FONT, 'blank': BODY_FONT}
+
+
+def edges(first_col, last_col, col, top=None, bottom=None):
+    """Left and right sit on every cell, so the columns stay boxed."""
+    return Border(left=MEDIUM if col >= first_col else None,
+                  right=MEDIUM if col <= last_col else None,
+                  top=top, bottom=bottom)
 
 
 # ── reading ────────────────────────────────────────────────────────────────
@@ -203,13 +219,11 @@ def format_family(fam):
 def group_block(group, addresses, cities):
     """One group as two stacks of lines: who and when above, families below.
 
-    They are kept apart so that a band of three groups can have its family
-    lists start on the same row even when one of them has a longer address.
+    They are kept apart so a band of three groups can have its family lists
+    start on the same row even when one of them has a longer address.
     """
-    head = [(group['name'], 'group'),
-            (group['overseer'] or '—', 'person'),
-            (group['assistant'] or '—', 'person'),
-            ('', 'blank'),
+    head = [('Overseer: %s' % group['overseer'] if group['overseer'] else '—', 'person'),
+            ('Assistant: %s' % group['assistant'] if group['assistant'] else '—', 'person'),
             (format_when(group['day'], group['time']) or 'Meeting not set', 'when')]
     head += [(part, 'where') for part in format_location(group['location'], addresses, cities)]
 
@@ -229,44 +243,49 @@ def write_groups_sheet(ws, model):
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=COLUMNS)
     title = ws.cell(row=1, column=1, value='%s — Field Service Groups' % model['congregation'])
-    title.font = WHITE_BOLD
+    title.font = TITLE_FONT
     title.fill = HEADER_FILL
     title.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 22
+    for col in range(1, COLUMNS + 1):
+        ws.cell(row=1, column=col).border = Border(
+            top=MEDIUM,
+            left=MEDIUM if col == 1 else None,
+            right=MEDIUM if col == COLUMNS else None,
+        )
 
-    styles = {
-        'group':  (GROUP_FONT, None),
-        'person': (LABEL_FONT, None),
-        'when':   (TIME_FONT, None),
-        'where':  (MUTED_FONT, None),
-        'family': (LABEL_FONT, None),
-        'blank':  (LABEL_FONT, None),
-    }
-
-    row = 3
+    row = 2
     for start in range(0, len(model['groups']), COLUMNS):
-        blocks = [group_block(g, model['addresses'], model['cities']) for g in model['groups'][start:start + COLUMNS]]
-        # Pad every header to the tallest in the band, then a blank line, so the
-        # family lists below all begin on the same row.
-        head_height = max(len(head) for head, _ in blocks) + 1
-        padded = [head + [('', 'blank')] * (head_height - len(head)) + families
-                  for head, families in blocks]
-        height = max(len(b) for b in padded)
-        for col, block in enumerate(padded, start=1):
-            for offset in range(height):
-                cell = ws.cell(row=row + offset, column=col)
-                if offset < len(block):
-                    text, kind = block[offset]
-                    cell.value = text
-                    cell.font = styles[kind][0]
-                    cell.alignment = Alignment(vertical='top', wrap_text=True)
-                cell.border = Border(
-                    left=THIN,
-                    right=THIN,
-                    top=THIN if offset == 0 else None,
-                    bottom=THIN if offset == height - 1 else None,
-                )
-        row += height + 1          # a spacer row between bands of groups
+        band = model['groups'][start:start + COLUMNS]
+        blocks = [group_block(g, model['addresses'], model['cities']) for g in band]
+
+        # Every block's families begin on the same row, so the thin rule under
+        # the meeting details runs unbroken across the band.
+        head_height = max(len(head) for head, _ in blocks)
+        fam_height  = max(len(fams) for _, fams in blocks)
+        last_head   = row + head_height          # the row the rule sits under
+        last_row    = last_head + fam_height
+
+        for col, (group, (head, fams)) in enumerate(zip(band, blocks), start=1):
+            name = group['name'] if group['id'] is None else '%s Field Service Group' % group['name'].strip()
+            cell = ws.cell(row=row, column=col, value=name)
+            cell.font, cell.fill, cell.alignment = GROUP_FONT, GROUP_FILL, TOP
+            # The sample has this rule under the first band only; it is drawn
+            # under every band here, which is plainly what was meant.
+            cell.border = edges(1, COLUMNS, col, top=MEDIUM, bottom=THIN)
+
+            padded = head + [('', 'blank')] * (head_height - len(head)) \
+                   + fams + [('', 'blank')] * (fam_height - len(fams))
+            for offset, (text, kind) in enumerate(padded, start=1):
+                c = ws.cell(row=row + offset, column=col)
+                c.value = text or None
+                c.font = FONTS[kind]
+                c.alignment = TOP
+                here = row + offset
+                c.border = edges(1, COLUMNS, col,
+                                 bottom=THIN if here == last_head else
+                                        MEDIUM if here == last_row else None)
+        row = last_row + 1       # no spacer: the next band starts straight after
 
     ws.page_setup.orientation = 'portrait'
     ws.page_setup.fitToWidth = 1
@@ -299,23 +318,23 @@ def collect_week(model):
 def write_week_sheet(ws, model):
     ws.title = 'Meetings for Field Service'
     week, unscheduled = collect_week(model)
+    last_col = len(DAYS)
 
-    for i in range(len(DAYS)):
+    for i in range(last_col):
         ws.column_dimensions[get_column_letter(i + 1)].width = 26
 
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(DAYS))
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
     title = ws.cell(row=1, column=1, value='%s — Meetings for Field Service' % model['congregation'])
-    title.font = WHITE_BOLD
+    title.font = TITLE_FONT
     title.fill = HEADER_FILL
     title.alignment = Alignment(horizontal='center', vertical='center')
     ws.row_dimensions[1].height = 22
 
     for i, day in enumerate(DAYS, start=1):
         cell = ws.cell(row=2, column=i, value=day)
-        cell.font = Font(bold=True, size=11)
-        cell.fill = DAY_FILL
-        cell.alignment = Alignment(horizontal='center')
-        cell.border = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+        cell.font, cell.fill = DAY_FONT, DAY_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='top')
+        cell.border = edges(1, last_col, i, top=MEDIUM, bottom=THIN)
 
     columns = []
     for day in DAYS:
@@ -324,34 +343,36 @@ def write_week_sheet(ws, model):
             lines.append(('%s  %s' % (format_time(time), label) if time else label, 'when'))
             for part in format_location(location, model['addresses'], model['cities']):
                 lines.append((part, 'where'))
-            lines.append(('', 'blank'))
+            lines.append(('', 'where'))          # a gap before the next meeting
         columns.append(lines[:-1] if lines else [])
 
     height = max([len(c) for c in columns] + [1])
+    last_row = 2 + height
     for col, lines in enumerate(columns, start=1):
         for offset in range(height):
-            cell = ws.cell(row=3 + offset, column=col)
+            here = 3 + offset
+            c = ws.cell(row=here, column=col)
             if offset < len(lines):
                 text, kind = lines[offset]
-                cell.value = text
-                cell.font = TIME_FONT if kind == 'when' else MUTED_FONT
-            cell.alignment = Alignment(vertical='top', wrap_text=True)
-            cell.border = Border(
-                left=THIN, right=THIN,
-                top=THIN if offset == 0 else None,
-                bottom=THIN if offset == height - 1 else None,
-            )
+                c.value = text or None
+                c.font = FONTS[kind]
+            else:
+                c.font = WHERE_FONT
+            c.alignment = TOP
+            c.border = edges(1, last_col, col,
+                             top=THIN if here == 3 else None,
+                             bottom=MEDIUM if here == last_row else None)
 
-    row = 3 + height + 1
+    row = last_row + 2
     if unscheduled:
-        ws.cell(row=row, column=1, value='No day set').font = Font(bold=True, size=11)
+        ws.cell(row=row, column=1, value='No day set').font = DAY_FONT
         row += 1
         for time, label, location in unscheduled:
             where = ', '.join(format_location(location, model['addresses'], model['cities']))
             ws.cell(row=row, column=1,
-                    value=' '.join(x for x in [format_time(time), label] if x)).font = TIME_FONT
+                    value=' '.join(x for x in [format_time(time), label] if x)).font = WHEN_FONT
             if where:
-                ws.cell(row=row, column=2, value=where).font = MUTED_FONT
+                ws.cell(row=row, column=2, value=where).font = WHERE_FONT
             row += 1
 
     ws.freeze_panes = 'A3'
