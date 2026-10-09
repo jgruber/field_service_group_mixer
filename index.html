@@ -67,6 +67,14 @@
               onclick="showGroupsView()">
         ← Groups
       </button>
+      <button id="cong-meetings-btn"
+              class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
+              onclick="openCongMeetingsModal()">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3M3 11h18M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"/>
+        </svg>
+        Meetings
+      </button>
       <button id="new-group-btn"
               class="hidden items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/25 text-white text-sm font-medium px-4 py-2 rounded-lg transition"
               onclick="openGroupModal()">
@@ -204,6 +212,14 @@
     <!-- Congregation-wide summary bar -->
     <div id="summary-bar" class="bg-white rounded-xl shadow-sm p-3 grid gap-2"
          style="grid-template-columns: repeat(auto-fit, minmax(80px, 1fr))"></div>
+
+    <!-- Congregation-wide field service meetings -->
+    <div id="cong-strip" class="hidden bg-white rounded-xl shadow-sm px-4 py-3 flex items-start gap-3 flex-wrap">
+      <span class="text-xs font-semibold text-slate-500 uppercase tracking-wide shrink-0 pt-1">Congregation Field Service</span>
+      <div id="cong-strip-list" class="flex flex-wrap gap-2 text-xs flex-1 min-w-0"></div>
+      <button onclick="openCongMeetingsModal()"
+              class="shrink-0 text-xs font-medium text-indigo-600 hover:text-indigo-800 pt-1">Edit</button>
+    </div>
 
     <!-- Group balance (same visual as the congregation directory) -->
     <div id="balance-card" class="bg-white rounded-xl shadow-sm">
@@ -417,6 +433,12 @@ function showMergeNotice(st) {
     bits.push(`carried over ${plural(st.groupsCarried.length, 'local group', 'local groups')} ` +
               `(${st.groupsCarried.map(h).join(', ')})`);
   }
+  if (st.meetingsKept) {
+    bits.push(`kept the meeting details for ${st.meetingsKept} ${st.meetingsKept === 1 ? 'group' : 'groups'}`);
+  }
+  if (st.congMeetingsKept) {
+    bits.push(`kept the ${st.congMeetingsKept} congregation field service ${st.congMeetingsKept === 1 ? 'meeting' : 'meetings'}`);
+  }
   if (st.groupsFolded.length) {
     bits.push(`folded ${st.groupsFolded.map(h).join(', ')} into the matching group now in the source`);
   }
@@ -435,6 +457,18 @@ function dismissImportNotice() {
 function buildState() {
   const db = state.db;
 
+  ensureMeetingTable(db);
+
+  // Every address in the congregation, to offer as hints for a meeting place.
+  state.congMeetings = readCongMeetings(db);
+
+  state.addressHints = rowsOf(db, `
+    SELECT DISTINCT full_address FROM persons
+    WHERE full_address IS NOT NULL AND full_address <> ''
+      AND moved = 0 AND (removed IS NULL OR removed = 0)
+    ORDER BY full_address
+  `).map(([a]) => a);
+
   // Congregation (id is needed when creating local groups)
   const cRes = db.exec('SELECT id, name FROM congregations LIMIT 1');
   state.congregationId   = cRes.length ? cRes[0].values[0][0] : null;
@@ -444,12 +478,18 @@ function buildState() {
   state.groups        = [];
   state.groupFamilies = {};
   state.groupFamilies[UNASSIGNED_ID] = []; // families with no FSG
+  const meetings = {};
+  for (const [gid, day, time, location] of rowsOf(db, 'SELECT group_id, day, time, location FROM fsg_meetings')) {
+    meetings[gid] = { day, time, location };
+  }
   const gRes = db.exec(
     'SELECT id, name, overseer, overseer_id, assistant, assistant_id, phone FROM field_service_groups ORDER BY name'
   );
   if (gRes.length) {
     for (const [id, name, overseer, overseer_id, assistant, assistant_id, phone] of gRes[0].values) {
-      state.groups.push({ id, name: name || '', overseer: overseer || '', overseer_id: overseer_id || null, assistant: assistant || null, assistant_id: assistant_id || null, phone: phone || '' });
+      const m = meetings[id] ?? {};
+      state.groups.push({ id, name: name || '', overseer: overseer || '', overseer_id: overseer_id || null, assistant: assistant || null, assistant_id: assistant_id || null, phone: phone || '',
+        meetDay: m.day || '', meetTime: m.time || '', meetLocation: m.location || '' });
       state.groupFamilies[id] = [];
     }
   }
@@ -458,7 +498,7 @@ function buildState() {
   const byFamily = {};
   const pRes = db.exec(`
     SELECT id, family_id, category,
-           display_name, mobile,
+           display_name, mobile, full_address,
            elder, ministerial_servant, special_pioneer,
            pioneer, inactive
     FROM persons
@@ -466,7 +506,7 @@ function buildState() {
       AND (removed IS NULL OR removed = 0)
   `);
   if (pRes.length) {
-    for (const [id, family_id, category, displayName, mobile,
+    for (const [id, family_id, category, displayName, mobile, address,
                 elder, ms, sp, pioneer, inactive] of pRes[0].values) {
       if (!family_id) continue;
       if (!byFamily[family_id]) byFamily[family_id] = [];
@@ -474,6 +514,7 @@ function buildState() {
         id,
         displayName: displayName || '',
         mobile:   mobile || '',
+        address:  address || '',
         category: category || 'publisher',
         elder:    !!elder,
         ms:       !!ms,
@@ -531,7 +572,7 @@ function mergeArrangement(localDb, incoming) {
   const st = {
     familiesKept: 0, personsKept: 0,
     newFamilies: 0, newPersons: 0,
-    goneFamilies: 0, gonePersons: 0,
+    goneFamilies: 0, gonePersons: 0, meetingsKept: 0, congMeetingsKept: 0,
     groupsCarried: [], groupsFolded: [],
   };
 
@@ -575,6 +616,33 @@ function mergeArrangement(localDb, incoming) {
     const mapped = remap.has(localGid) ? remap.get(localGid) : localGid;
     return groupName.has(mapped) ? mapped : undefined;
   };
+
+  // --- meeting details ----------------------------------------------------
+  // Local metadata the source knows nothing about, so it is kept the same way
+  // the arrangement is. A placeholder's details follow it into the real group.
+  ensureMeetingTable(incoming);
+  for (const [gid, day, time, location] of rowsOf(localDb,
+        'SELECT group_id, day, time, location FROM fsg_meetings')) {
+    const dest = remap.has(gid) ? remap.get(gid) : gid;
+    if (!groupName.has(dest)) continue;                 // that group is gone
+    const existing = rowsOf(incoming, `SELECT 1 FROM fsg_meetings WHERE group_id = ${dest}`);
+    if (existing.length) continue;                      // already carried
+    incoming.run(
+      'INSERT INTO fsg_meetings (group_id, day, time, location) VALUES (?, ?, ?, ?)',
+      [dest, day, time, location]
+    );
+    st.meetingsKept++;
+  }
+
+  // The congregation's own meetings belong to no group, so they carry across
+  // whole — unless the import already brought some of its own.
+  if (!rowsOf(incoming, 'SELECT 1 FROM congregation_meetings LIMIT 1').length) {
+    const list = readCongMeetings(localDb);
+    if (list.length) {
+      writeCongMeetings(incoming, list);
+      st.congMeetingsKept = list.length;
+    }
+  }
 
   // --- families and persons ----------------------------------------------
   // Each table is handled the same way, but separately: in the source data a
@@ -669,6 +737,154 @@ function totalStats() {
   return s;
 }
 
+// ─── Field service meeting details ─────────────────────────────────────────
+// When and where each group meets for field service. The source database has
+// nowhere to put this, so it lives in its own table rather than bolted onto
+// field_service_groups — local metadata, kept clearly separate from the
+// source's own schema, and carried across on a merge.
+
+function ensureMeetingTable(db) {
+  db.run(`CREATE TABLE IF NOT EXISTS fsg_meetings (
+            group_id INTEGER PRIMARY KEY,
+            day      TEXT,
+            time     TEXT,
+            location TEXT
+          )`);
+  // Arrangements the whole congregation meets for, which belong to no group —
+  // typically the midweek ones, while the groups meet at the weekend. A list,
+  // because there can be several in a week.
+  db.run(`CREATE TABLE IF NOT EXISTS congregation_meetings (
+            position INTEGER PRIMARY KEY,
+            day      TEXT,
+            time     TEXT,
+            location TEXT
+          )`);
+}
+
+function readCongMeetings(db) {
+  return rowsOf(db, 'SELECT day, time, location FROM congregation_meetings ORDER BY position')
+    .map(([day, time, location]) => ({ day: day || '', time: time || '', location: location || '' }));
+}
+
+// The list is short and always edited as a whole, so it is rewritten outright
+// rather than diffed row by row.
+function writeCongMeetings(db, list) {
+  db.run('DELETE FROM congregation_meetings');
+  list.forEach((m, i) => db.run(
+    'INSERT INTO congregation_meetings (position, day, time, location) VALUES (?, ?, ?, ?)',
+    [i, m.day || null, m.time || null, m.location || null]
+  ));
+}
+
+const MEETING_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function saveMeeting(groupId, { day, time, location }) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group) return;
+  if (!day && !time && !location) {
+    state.db.run('DELETE FROM fsg_meetings WHERE group_id = ?', [groupId]);
+  } else {
+    state.db.run(
+      `INSERT INTO fsg_meetings (group_id, day, time, location) VALUES (?, ?, ?, ?)
+       ON CONFLICT(group_id) DO UPDATE SET day = excluded.day, time = excluded.time, location = excluded.location`,
+      [groupId, day || null, time || null, location || null]
+    );
+  }
+  Object.assign(group, { meetDay: day || '', meetTime: time || '', meetLocation: location || '' });
+}
+
+// "14:30" as it is written on a notice board
+function formatMeetingTime(t) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t || '');
+  if (!m) return t || '';
+  const h = Number(m[1]);
+  return `${h % 12 === 0 ? 12 : h % 12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+}
+
+function meetingSummary(group) {
+  const when = [group.meetDay, formatMeetingTime(group.meetTime)].filter(Boolean).join(' ');
+  return { when, where: group.meetLocation || '' };
+}
+
+function addressOf(personId) {
+  return personId ? (getAllServants().find(p => p.id === personId)?.address ?? '') : '';
+}
+
+// ─── Congregation field service meetings ───────────────────────────────────
+
+let _congDraft = [];   // edited copy; only written to the database on Save
+
+function openCongMeetingsModal() {
+  if (!state.db) { alert('Load a database first.'); return; }
+  _congDraft = state.congMeetings.map(m => ({ ...m }));
+  if (!_congDraft.length) _congDraft.push({ day: '', time: '', location: '' });
+  document.getElementById('cong-hints').innerHTML =
+    (state.addressHints ?? []).map(a => `<option value="${h(a)}"></option>`).join('');
+  renderCongRows();
+  document.getElementById('cong-modal').style.display = 'flex';
+}
+
+function closeCongMeetingsModal() {
+  document.getElementById('cong-modal').style.display = 'none';
+}
+
+function renderCongRows() {
+  document.getElementById('cong-rows').innerHTML = _congDraft.map((m, i) => `
+    <div class="flex gap-2 items-start">
+      <select onchange="congEdit(${i}, 'day', this.value)"
+              class="w-32 shrink-0 border border-slate-300 rounded-lg px-2 py-2 text-sm bg-white focus:outline-none focus:border-indigo-400">
+        <option value="">— Day —</option>
+        ${MEETING_DAYS.map(d => `<option ${m.day === d ? 'selected' : ''}>${d}</option>`).join('')}
+      </select>
+      <input type="time" value="${h(m.time)}" onchange="congEdit(${i}, 'time', this.value)"
+             class="w-28 shrink-0 border border-slate-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-indigo-400" />
+      <input type="text" value="${h(m.location)}" list="cong-hints" autocomplete="off" placeholder="Where"
+             oninput="congEdit(${i}, 'location', this.value)"
+             class="flex-1 min-w-0 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400" />
+      <button onclick="congRemove(${i})" title="Remove"
+              class="shrink-0 text-slate-400 hover:text-red-600 text-lg leading-none px-1 py-1.5">✕</button>
+    </div>`).join('');
+}
+
+function congEdit(i, field, value) {
+  if (_congDraft[i]) _congDraft[i][field] = value;
+}
+
+function congAdd() {
+  _congDraft.push({ day: '', time: '', location: '' });
+  renderCongRows();
+}
+
+function congRemove(i) {
+  _congDraft.splice(i, 1);
+  if (!_congDraft.length) _congDraft.push({ day: '', time: '', location: '' });
+  renderCongRows();
+}
+
+function saveCongMeetings() {
+  // A row with nothing filled in is not a meeting.
+  state.congMeetings = _congDraft.filter(m => m.day || m.time || m.location);
+  writeCongMeetings(state.db, state.congMeetings);
+  persistDB();
+  closeCongMeetingsModal();
+  renderCongStrip();
+}
+
+// A quiet line above the groups, so the midweek arrangements are visible
+// without opening anything.
+function renderCongStrip() {
+  const el = document.getElementById('cong-strip');
+  if (!state.congMeetings.length) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  document.getElementById('cong-strip-list').innerHTML = state.congMeetings.map(m => {
+    const when = [m.day, formatMeetingTime(m.time)].filter(Boolean).join(' ');
+    return `<span class="inline-flex items-center gap-1.5 bg-slate-100 rounded-lg px-2.5 py-1">
+      <span class="font-semibold text-slate-700">${h(when) || '—'}</span>
+      ${m.location ? `<span class="text-slate-400">·</span><span class="text-slate-500">${h(m.location)}</span>` : ''}
+    </span>`;
+  }).join('');
+}
+
 // ─── Local group management ────────────────────────────────────────────────
 // A "local" group is one the secretary creates here to plan an arrangement that
 // the source database does not know about yet. It is written into this copy of
@@ -676,7 +892,8 @@ function totalStats() {
 // carries a negative id so it stays recognisable as not-yet-official.
 
 let _editingGroupId = null; // null while the modal is creating a new group
-let _autoFilledPhone = '';  // the mobile the dialog filled in, so a typed number is never overwritten
+let _autoFilledPhone = '';     // the mobile the dialog filled in, so a typed number is never overwritten
+let _autoFilledLocation = '';  // likewise for the meeting place taken from the overseer's address
 
 function nextLocalGroupId() {
   return Math.min(0, ...state.groups.map(g => g.id)) - 1;
@@ -688,7 +905,7 @@ function getAllServants() {
   for (const family of Object.values(state.families)) {
     for (const p of family.persons) {
       if ((p.elder || p.ms) && !seen.has(p.id)) {
-        seen.set(p.id, { id: p.id, name: p.displayName || '(Unknown)', role: p.elder ? 'Elder' : 'MS', mobile: p.mobile || '' });
+        seen.set(p.id, { id: p.id, name: p.displayName || '(Unknown)', role: p.elder ? 'Elder' : 'MS', mobile: p.mobile || '', address: p.address || '' });
       }
     }
   }
@@ -709,9 +926,27 @@ function openGroupModal(groupId = null) {
   const group = groupId !== null ? state.groups.find(g => g.id === groupId) : null;
   _editingGroupId = group ? group.id : null;
 
-  document.getElementById('group-modal-title').textContent = group ? 'Edit Local Group' : 'New Local Group';
+  const imported = !!group && !isLocalGroup(group.id);
+  document.getElementById('group-modal-title').textContent =
+    !group ? 'New Local Group' : (imported ? 'Edit Group' : 'Edit Local Group');
   document.getElementById('group-name-input').value  = group?.name  ?? '';
   document.getElementById('group-phone-input').value = group?.phone ?? '';
+
+  // Name and overseer belong to the source database for an imported group;
+  // everything else here is this copy's own and stays editable.
+  for (const id of ['group-name-input', 'group-overseer-select']) {
+    const el = document.getElementById(id);
+    el.disabled = imported;
+    el.classList.toggle('bg-slate-100', imported);
+    el.classList.toggle('text-slate-500', imported);
+  }
+  document.getElementById('group-locked-hint').classList.toggle('hidden', !imported);
+
+  document.getElementById('group-day-select').value      = group?.meetDay      ?? '';
+  document.getElementById('group-time-input').value      = group?.meetTime     ?? '';
+  document.getElementById('group-location-input').value  = group?.meetLocation ?? '';
+  document.getElementById('address-hints').innerHTML =
+    (state.addressHints ?? []).map(a => `<option value="${h(a)}"></option>`).join('');
 
   document.getElementById('group-overseer-select').innerHTML  = servantOptions(group?.overseer_id  ?? null);
   document.getElementById('group-assistant-select').innerHTML = servantOptions(group?.assistant_id ?? null);
@@ -721,6 +956,8 @@ function openGroupModal(groupId = null) {
   // by hand and is left alone.
   const ovMobile = mobileOf(group?.overseer_id ?? null);
   _autoFilledPhone = (group?.phone && group.phone === ovMobile) ? ovMobile : '';
+  const ovAddress = addressOf(group?.overseer_id ?? null);
+  _autoFilledLocation = (group?.meetLocation && group.meetLocation === ovAddress) ? ovAddress : '';
 
   showGroupModalError('');
   document.getElementById('group-modal').style.display = 'flex';
@@ -734,12 +971,21 @@ function mobileOf(personId) {
 // The source data sets a group's phone to its overseer's mobile, so follow that
 // when an overseer is picked — without clobbering a number typed by hand.
 function onOverseerChange() {
+  const overseerId = idFromSelect('group-overseer-select');
+
   const phoneEl = document.getElementById('group-phone-input');
-  const current = phoneEl.value.trim();
-  if (current !== '' && current !== _autoFilledPhone) return;
-  const mobile = mobileOf(idFromSelect('group-overseer-select'));
-  phoneEl.value    = mobile;
-  _autoFilledPhone = mobile;
+  if (phoneEl.value.trim() === '' || phoneEl.value.trim() === _autoFilledPhone) {
+    _autoFilledPhone = mobileOf(overseerId);
+    phoneEl.value    = _autoFilledPhone;
+  }
+
+  // The group normally meets at the overseer's home, so offer that address —
+  // again without overwriting a place that was typed or picked by hand.
+  const locEl = document.getElementById('group-location-input');
+  if (locEl.value.trim() === '' || locEl.value.trim() === _autoFilledLocation) {
+    _autoFilledLocation = addressOf(overseerId);
+    locEl.value         = _autoFilledLocation;
+  }
 }
 
 function idFromSelect(id) {
@@ -768,18 +1014,37 @@ function saveGroupModal() {
   const overseer    = nameOf(overseerId);
   const assistant   = nameOf(assistantId);
 
-  if (!name) { showGroupModalError('Group name is required.'); return; }
-  const clash = state.groups.find(g =>
-    g.id !== _editingGroupId && g.name.toLowerCase() === name.toLowerCase());
-  if (clash) { showGroupModalError(`A group named "${name}" already exists.`); return; }
-  if (overseerId && overseerId === assistantId) {
+  const editing  = _editingGroupId === null ? null : state.groups.find(g => g.id === _editingGroupId);
+  const imported = !!editing && !isLocalGroup(editing.id);
+  const meeting  = {
+    day:      document.getElementById('group-day-select').value,
+    time:     document.getElementById('group-time-input').value,
+    location: document.getElementById('group-location-input').value.trim(),
+  };
+
+  if (!imported) {
+    if (!name) { showGroupModalError('Group name is required.'); return; }
+    const clash = state.groups.find(g =>
+      g.id !== _editingGroupId && g.name.toLowerCase() === name.toLowerCase());
+    if (clash) { showGroupModalError(`A group named "${name}" already exists.`); return; }
+    if (overseerId && overseerId === assistantId) {
+      showGroupModalError('The overseer and the assistant must be two different people.');
+      return;
+    }
+  } else if (editing.overseer_id && editing.overseer_id === assistantId) {
     showGroupModalError('The overseer and the assistant must be two different people.');
     return;
   }
 
   try {
-    if (_editingGroupId === null) createLocalGroup(name, overseer, overseerId, assistant, assistantId, phone);
-    else                          updateLocalGroup(_editingGroupId, name, overseer, overseerId, assistant, assistantId, phone);
+    if (_editingGroupId === null) {
+      const id = createLocalGroup(name, overseer, overseerId, assistant, assistantId, phone);
+      saveMeeting(id, meeting);
+    } else {
+      if (imported) updateGroupDetails(_editingGroupId, assistant, assistantId, phone);
+      else          updateLocalGroup(_editingGroupId, name, overseer, overseerId, assistant, assistantId, phone);
+      saveMeeting(_editingGroupId, meeting);
+    }
   } catch (err) {
     console.error(err);
     showGroupModalError('Could not save the group: ' + err.message);
@@ -805,6 +1070,19 @@ function createLocalGroup(name, overseer, overseerId, assistant, assistantId, ph
   });
   state.groupFamilies[id] = [];
   sortGroups();
+  return id;
+}
+
+// An imported group's name and overseer come from the source; only the fields
+// this copy owns are written.
+function updateGroupDetails(groupId, assistant, assistantId, phone) {
+  const group = state.groups.find(g => g.id === groupId);
+  if (!group) return;
+  state.db.run(
+    'UPDATE field_service_groups SET assistant = ?, assistant_id = ?, phone = ? WHERE id = ?',
+    [assistant || null, assistantId, phone || null, groupId]
+  );
+  Object.assign(group, { assistant: assistant || null, assistant_id: assistantId, phone });
 }
 
 function updateLocalGroup(groupId, name, overseer, overseerId, assistant, assistantId, phone) {
@@ -861,6 +1139,7 @@ function deleteGroup(groupId) {
     [groupId]
   );
   state.db.run('DELETE FROM field_service_groups WHERE id = ?', [groupId]);
+  state.db.run('DELETE FROM fsg_meetings WHERE group_id = ?', [groupId]);
 
   delete state.groupFamilies[groupId];
   state.groups = state.groups.filter(g => g.id !== groupId);
@@ -1119,7 +1398,7 @@ function showGroupsView() {
 
 // Header buttons that only make sense while the groups grid is on screen
 function setGroupToolsVisible(on) {
-  for (const id of ['print-btn', 'new-group-btn']) {
+  for (const id of ['print-btn', 'new-group-btn', 'cong-meetings-btn']) {
     const el = document.getElementById(id);
     el.classList.toggle('hidden', !on);
     el.classList.toggle('flex',   on);
@@ -1367,14 +1646,13 @@ function groupCardHTML(group) {
               : ''}
           </h2>
           <div class="flex gap-1.5 shrink-0">
-            ${local
-              ? `<button onclick="openGroupModal(${group.id})" title="Edit group"
-                         class="${c.btn} hover:text-white transition leading-none">
-                   <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                     <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H8v-2.414a2 2 0 01.586-1.414z"/>
-                   </svg>
-                 </button>`
-              : ''}
+            <button onclick="openGroupModal(${group.id})"
+                    title="${local ? 'Edit group' : 'Edit meeting, assistant and phone'}"
+                    class="${c.btn} hover:text-white transition leading-none">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H8v-2.414a2 2 0 01.586-1.414z"/>
+              </svg>
+            </button>
             <button onclick="deleteGroup(${group.id})"
                     title="${local ? 'Delete group' : 'Delete from this copy of the database'}"
                     class="${c.btn} hover:text-white transition leading-none">
@@ -1408,6 +1686,11 @@ function groupCardHTML(group) {
             }
           </div>
           ${group.phone ? `<div>📞 ${h(group.phone)}</div>` : ''}
+          ${(() => {
+            const m = meetingSummary(group);
+            return (m.when ? `<div>📅 ${h(m.when)}</div>` : '') +
+                   (m.where ? `<div class="break-words">📍 ${h(m.where)}</div>` : '');
+          })()}
         </div>
       </div>
 
@@ -1494,6 +1777,7 @@ function renderAll() {
   nameEl.classList.remove('hidden');
 
   renderSummaryBar();
+  renderCongStrip();
   renderBalanceChart();
   document.getElementById('groups-container').innerHTML =
     state.groups.map(g => groupCardHTML(g)).join('') + unassignedCardHTML();
@@ -1695,16 +1979,34 @@ function printGroups() {
     <h1>${h(state.congregationName)} — Field Service Groups</h1>
     <div class="print-date">Printed ${date}</div>`;
 
+  if (state.congMeetings.length) {
+    html += `
+      <div class="group-section">
+        <h2>Congregation Field Service</h2>
+        <table>
+          <thead><tr><th>Day</th><th>Time</th><th>Location</th></tr></thead>
+          <tbody>${state.congMeetings.map(m => `<tr>
+            <td>${h(m.day) || ''}</td>
+            <td>${h(formatMeetingTime(m.time)) || ''}</td>
+            <td>${h(m.location) || ''}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>`;
+  }
+
   for (const group of state.groups) {
     const fids       = state.groupFamilies[group.id] ?? [];
     const sortedFams = fids.map(id => state.families[id]).filter(Boolean)
                            .sort((a, b) => a.name.localeCompare(b.name));
     const gs = groupStats(group.id);
 
+    const ms = meetingSummary(group);
     const meta = [
       group.overseer  ? `Overseer: ${h(group.overseer)}`   : '',
       group.assistant ? `Assistant: ${h(group.assistant)}` : '',
       group.phone     ? `Phone: ${h(group.phone)}`         : '',
+      ms.when         ? `Meets: ${h(ms.when)}`             : '',
+      ms.where        ? `At: ${h(ms.where)}`               : '',
       isLocalGroup(group.id) ? 'Local group — not yet in the source database' : '',
     ].filter(Boolean).join(' · ');
 
@@ -1843,6 +2145,40 @@ checkServerDB();
                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
                onkeydown="if(event.key==='Enter') saveGroupModal()">
       </div>
+      <div class="border-t border-slate-100 pt-4">
+        <h3 class="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2.5">Field service meeting</h3>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1" for="group-day-select">Day</label>
+            <select id="group-day-select"
+                    class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:border-indigo-400">
+              <option value="">— Not set —</option>
+              <option>Sunday</option><option>Monday</option><option>Tuesday</option>
+              <option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-medium text-slate-400 mb-1" for="group-time-input">Time</label>
+            <input id="group-time-input" type="time"
+                   class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400" />
+          </div>
+        </div>
+        <div class="mt-3">
+          <label class="block text-[11px] font-medium text-slate-400 mb-1" for="group-location-input">
+            Location <span class="text-slate-300">— the overseer's address unless you change it</span>
+          </label>
+          <input id="group-location-input" type="text" list="address-hints" autocomplete="off"
+                 placeholder="Where the group meets"
+                 class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400" />
+          <datalist id="address-hints"></datalist>
+        </div>
+      </div>
+
+      <p id="group-locked-hint" class="hidden text-[11px] text-slate-400 leading-snug bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        The name and overseer come from the imported database and are set there.
+        Everything else on this dialog belongs to this copy.
+      </p>
+
       <p class="text-[11px] text-slate-400 leading-snug bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
         A local group lives only in this copy of the database, so families can be arranged
         into it before it exists upstream. Add it to the source system to make it permanent —
@@ -1861,6 +2197,45 @@ checkServerDB();
               class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-5 py-2 rounded-lg transition">
         Save
       </button>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── Congregation field service meetings ─────────────────────────────── -->
+<div id="cong-modal"
+     class="fixed inset-0 z-40 items-center justify-center bg-black/40 backdrop-blur-sm"
+     style="display:none">
+  <div class="absolute inset-0" onclick="closeCongMeetingsModal()"></div>
+  <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 z-10 flex flex-col max-h-[90vh]">
+
+    <div class="flex items-center justify-between px-6 pt-6 pb-2 shrink-0">
+      <div>
+        <h2 class="text-lg font-bold text-slate-800">Congregation Field Service</h2>
+        <p class="text-xs text-slate-400 mt-0.5">
+          Arrangements the whole congregation meets for, usually midweek — separate from the groups' own meetings.
+        </p>
+      </div>
+      <button onclick="closeCongMeetingsModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none shrink-0 ml-3">✕</button>
+    </div>
+
+    <div class="overflow-y-auto px-6 py-4 flex-1">
+      <div id="cong-rows" class="space-y-2"></div>
+      <datalist id="cong-hints"></datalist>
+      <button onclick="congAdd()"
+              class="mt-3 flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-800">
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+        </svg>
+        Add a meeting
+      </button>
+    </div>
+
+    <div class="border-t border-slate-200 px-6 py-4 shrink-0 flex gap-2 justify-end">
+      <button onclick="closeCongMeetingsModal()"
+              class="text-slate-500 hover:text-slate-700 text-sm font-medium px-4 py-2 rounded-lg transition">Cancel</button>
+      <button onclick="saveCongMeetings()"
+              class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-5 py-2 rounded-lg transition">Save</button>
     </div>
 
   </div>

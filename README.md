@@ -92,6 +92,27 @@ Then open [http://localhost:3000](http://localhost:3000).
 8. Click **New Group** in the header to create a *local* group — see [Local Groups](#local-groups) below.
 9. To delete the server-side database or upload a new one, click **Populate Database** in the header.
 
+## Field Service Meetings
+
+Two separate things, both stored only in this copy of the database — the source
+has nowhere to put either, so they live in their own tables (`fsg_meetings` and
+`congregation_meetings`) rather than bolted onto the source's own schema, and
+both are carried across by a [merge](#merge-or-overwrite).
+
+**Each group's own meeting.** Open a group's ✏️ and set a day, a time, and a
+place. The place is free text with the congregation's addresses offered as
+hints, and it fills in with the overseer's address when an overseer is chosen —
+typed over, it stays as typed. It shows on the group card and on the printout.
+
+Every group has the ✏️ now, imported ones included: the meeting, assistant and
+phone belong to this copy, so they are editable, while the name and overseer
+come from the source and are shown locked.
+
+**The congregation's own meetings.** The **Meetings** button in the header opens
+a list — add as many as the week needs. These belong to no group: typically the
+midweek arrangements, while the groups meet at the weekend. They appear as a
+strip above the groups and as their own section on the printout.
+
 ## Local Groups
 
 A local group is a field service group created inside the mixer that the source
